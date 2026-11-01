@@ -1,0 +1,8 @@
+# pay-google.yaml · Google 付款(Google One / Gemini 订阅) · 版本 [v1.2.0]
+# 共享域名:打开后,其他 Google 服务的付款也会走静态 IP。
+# 用到它的服务:Gemini
+# 必须与脚本里的 FALLBACK['pay-google'] 保持一致。
+payload:
+  - DOMAIN,one.google.com                # Google One 订阅页
+  - DOMAIN,payments.google.com
+  - DOMAIN,pay.google.com

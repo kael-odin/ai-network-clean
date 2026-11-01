@@ -1,0 +1,19 @@
+# ip.yaml · 规则服务按设备令牌返回的静态 IP 节点(示例,不是真实凭据)
+# 地址:{ruleBase}/ip.yaml,ruleBase 里带设备令牌。由脚本里的 proxy-providers 'ain-ip' 拉取,每小时一次。
+# 服务端实现见 services/rule-server(实际返回等价的 JSON;JSON 是合法的 YAML)。
+#
+# 服务端约定:
+# - 只返回这台设备绑定的一个节点;令牌无效或已吊销时返回 401/404,不要返回空列表或其他节点
+#   (拉取失败时核心继续用本地缓存;没有缓存时 AI Network 专用组只剩阻断节点,不会直连)
+# - 换 IP、重置凭据:直接改这里的内容,用户不用重新粘贴脚本,下次拉取生效
+# - 节点名在同一设备上保持不变,核心重启后才能恢复到同一个选中项
+# - 不要在这里写 dialer-proxy:前置代理由脚本按用户设置通过 override 加上
+# - 记录每次拉取的来源 IP 和时间,用于发现令牌被多处使用
+proxies:
+  - name: 'AI Network · 美国'
+    type: socks5                  # 按 IP 供应商协议:socks5 / http
+    server: proxy.example.com
+    port: 10000
+    username: device-username
+    password: device-password
+    udp: true

@@ -1,0 +1,44 @@
+# ip-check.yaml · IP 检测网站 · 版本 [v1.5.1]
+# 用户常去「查 IP / 查纯净度」的网站。它们不是 AI 服务,本来按规则走普通代理(机场节点),用户看到的是机场 IP,
+# 评分差就以为是独享 IP 不纯净(2026-10-15 真实反馈)。划到独享 IP 组,用户在这些网站看到的就是独享 IP 和它的评分。
+# 插件体检、手机自检用的 api.ipify.org、www.cloudflare.com、myip.ipip.net、speedtest.cn 不能放进来:它们代表「其他网站」的出口。
+# 必须与脚本里的 FALLBACK['ip-check'] 保持一致。
+# v1.5.0(PM 10-30):补常见的纯净度 / 查 IP 网站(ippure、iplark、ipapi.is、browserscan 等),用户天天问「检测网站显示的不是我的 IP」。
+# v1.5.1(PM 10-30):加 ip.net.coffee(Claude IP 检测页)。
+payload:
+  - DOMAIN-SUFFIX,ping0.cc
+  - DOMAIN-SUFFIX,ipinfo.io
+  - DOMAIN-SUFFIX,whoer.net
+  - DOMAIN-SUFFIX,browserleaks.com
+  - DOMAIN-SUFFIX,ipqualityscore.com
+  - DOMAIN-SUFFIX,scamalytics.com
+  - DOMAIN-SUFFIX,ip.sb
+  - DOMAIN-SUFFIX,iplocation.net
+  - DOMAIN-SUFFIX,ipleak.net
+  - DOMAIN-SUFFIX,ip2location.com
+  - DOMAIN-SUFFIX,db-ip.com
+  - DOMAIN-SUFFIX,maxmind.com
+  - DOMAIN-SUFFIX,iphey.com
+  - DOMAIN-SUFFIX,pixelscan.net
+  - DOMAIN-SUFFIX,ip-api.com
+  - DOMAIN-SUFFIX,ipapi.co
+  - DOMAIN-SUFFIX,proxycheck.io
+  - DOMAIN-SUFFIX,abuseipdb.com
+  - DOMAIN-SUFFIX,ip125.com
+  - DOMAIN-SUFFIX,ipaddress.my
+  - DOMAIN-SUFFIX,ippure.com
+  - DOMAIN-SUFFIX,iplark.com
+  - DOMAIN-SUFFIX,ipapi.is
+  - DOMAIN-SUFFIX,ipdata.co
+  - DOMAIN-SUFFIX,browserscan.net
+  - DOMAIN-SUFFIX,ipcheck.ing
+  - DOMAIN-SUFFIX,whatismyipaddress.com
+  - DOMAIN-SUFFIX,whatismyip.com
+  - DOMAIN-SUFFIX,myip.com
+  - DOMAIN-SUFFIX,iplocation.io
+  - DOMAIN-SUFFIX,ipwho.is
+  - DOMAIN-SUFFIX,ipregistry.co
+  - DOMAIN-SUFFIX,ip.gs
+  - DOMAIN-SUFFIX,ifconfig.me
+  - DOMAIN-SUFFIX,ifconfig.co
+  - DOMAIN-SUFFIX,net.coffee

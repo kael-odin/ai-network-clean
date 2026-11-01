@@ -1,0 +1,35 @@
+{
+  "name": "ain-clean",
+  "productName": "AI Network Clean",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AI 流量走你自己的静态 IP,其他国外网站走你自己的订阅节点,国内直连",
+  "type": "module",
+  "main": "dist/main/index.cjs",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "typecheck": "tsc -p .",
+    "icon": "node scripts/make-icon.mjs",
+    "resources": "node scripts/fetch-resources.mjs",
+    "build": "node scripts/build.mjs",
+    "start": "npm run build && electron .",
+    "dist:win": "npm run build && electron-builder --win nsis --x64"
+  },
+  "dependencies": {
+    "js-yaml": "4.3.2"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "electron": "44.8.0",
+    "electron-builder": "26.0.12",
+    "esbuild": "0.28.2",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "typescript": "^5.9.3"
+  }
+}

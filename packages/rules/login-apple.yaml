@@ -1,0 +1,6 @@
+# login-apple.yaml · Apple 账号登录 · 版本 [v1.2.0]
+# 共享域名:打开后,其他网站的 Apple 登录也会走静态 IP。
+# 用到它的服务:Claude、ChatGPT
+# 必须与脚本里的 FALLBACK['login-apple'] 保持一致。
+payload:
+  - DOMAIN,appleid.apple.com

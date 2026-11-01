@@ -1,0 +1,23 @@
+# claude-core.yaml · Claude 主链路 · 版本 [v1.3.0]
+# 必须与脚本里的 FALLBACK['claude-core'] 保持一致。上线前在真实账号下逐个功能抓包核对。
+payload:
+  - DOMAIN-SUFFIX,claude.ai              # 网页版
+  - DOMAIN-SUFFIX,claude.com             # 含 platform.claude.com
+  - DOMAIN-SUFFIX,anthropic.com          # 官网、API(api.anthropic.com)、控制台、帮助中心、统计(statsig / a-api)
+  - DOMAIN-SUFFIX,claudeusercontent.com  # 文件、Artifacts 等用户内容
+  - DOMAIN-SUFFIX,clau.de                # Anthropic 官方短链
+  # 2026-10-22 补全配套域名(产品围绕 Claude 优化 C7:同一个页面的请求不能有的走独享 IP、有的走别的出口):
+  - DOMAIN-SUFFIX,hcaptcha.com           # claude.ai 登录页的人机验证(js.hcaptcha.com、api.hcaptcha.com 等)
+  - DOMAIN,browser-intake-us5-datadoghq.com  # 帮助中心 support.claude.com 的 Datadog 监控上报
+  - DOMAIN-SUFFIX,intercom.io            # 帮助中心和客服对话组件(widget.intercom.io、api-iam.intercom.io)
+  - DOMAIN-SUFFIX,intercomcdn.com        # 同上,静态资源
+  - DOMAIN-SUFFIX,intercomassets.com     # 同上,静态资源
+  # 2026-10-05 抓包(已登录的 Chrome,首页 + 发消息 + 设置 + 账单 + 帮助中心 + 控制台):
+  # claude.ai 页面只请求 claude.ai、assets-proxy.anthropic.com、s-cdn.anthropic.com 和 js.stripe.com(pay-stripe 已覆盖)。
+  # 监控(Datadog rum)和事件上报都经 claude.ai 自己的接口转发,没有第三方域名。
+  # platform.claude.com 只请求自己的域名。
+  # 没有出现:anthropicusercontent.com、anthropiccdn.com,以下保留为候选
+  # 待抓包确认(确认后再启用,并同步 FALLBACK):
+  # - DOMAIN-SUFFIX,anthropicusercontent.com
+  # - DOMAIN-SUFFIX,anthropiccdn.com
+  # 错误上报(Sentry,共享域名):只加 Claude 专用的 ingest 子域,不加整个 sentry.io

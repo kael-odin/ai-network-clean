@@ -1,0 +1,11 @@
+# login-microsoft.yaml · Microsoft 账号登录 · 版本 [v1.3.0]
+# 共享域名:打开后,其他网站和 Office、Teams 等的 Microsoft 登录也会走静态 IP。
+# 用到它的服务:ChatGPT
+# 必须与脚本里的 FALLBACK['login-microsoft'] 保持一致。
+payload:
+  - DOMAIN,login.microsoftonline.com     # 工作或学校账号
+  - DOMAIN,login.live.com                # 个人账号
+  # 注册新账号和账号管理页也走静态 IP,注册、改密码时的环境和登录一致(2026-10-15 产品决定)
+  - DOMAIN,signup.live.com               # 注册个人账号
+  - DOMAIN,account.live.com              # 个人账号安全、验证
+  - DOMAIN,account.microsoft.com         # 账号管理页

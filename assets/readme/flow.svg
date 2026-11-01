@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 480" width="100%" role="img" aria-label="分流示意：AI 域名走你的静态 IP，其他国外网站走你的订阅节点，国内网站直连；四项防护不全绿时 AI 域名直接拒绝">
+  <title>AI Network Clean 分流示意</title>
+  <desc>AI 域名固定走你的静态 IP，其他国外网站走你的订阅节点，国内网站直连；出口、DNS、IPv6、WebRTC 四项防护没有全部通过时，AI 域名直接拒绝。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#5b6b85"/>
+    </marker>
+    <marker id="arrowMuted" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#4a5568"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="480" rx="22" fill="#0b1220"/>
+  <rect x="0.75" y="0.75" width="1198.5" height="478.5" rx="21.25" fill="none" stroke="#1c2a44" stroke-width="1.5"/>
+
+  <text x="60" y="66" font-family="'Segoe UI','Microsoft YaHei','PingFang SC','Noto Sans CJK SC',sans-serif" font-size="34" font-weight="700" fill="#e9eff9">只把 AI 流量，交给你的静态 IP</text>
+  <text x="60" y="104" font-family="'Segoe UI','Microsoft YaHei','PingFang SC','Noto Sans CJK SC',sans-serif" font-size="19" fill="#93a4bd">AI 网站看到的永远是同一个出口；其他国外网站走订阅节点，国内网站直连。</text>
+
+  <!-- 第一行：AI -->
+  <rect x="60" y="140" width="290" height="64" rx="14" fill="#16274d" stroke="#2f4f8f" stroke-width="1.5"/>
+  <text x="205" y="179" text-anchor="middle" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="21" font-weight="600" fill="#d6e4ff">AI 域名</text>
+
+  <line x1="350" y1="172" x2="410" y2="172" stroke="#5b6b85" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <rect x="420" y="140" width="260" height="64" rx="14" fill="#10261f" stroke="#2b6b52" stroke-width="1.5"/>
+  <text x="550" y="172" text-anchor="middle" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="21" font-weight="600" fill="#bdf3d9">你的静态 IP</text>
+  <text x="550" y="193" text-anchor="middle" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="15" fill="#7fb79f">固定出口 · 不绕路</text>
+
+  <line x1="680" y1="172" x2="740" y2="172" stroke="#5b6b85" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <text x="760" y="167" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="20" font-weight="600" fill="#c9d6e8">Claude / ChatGPT / Gemini</text>
+  <text x="760" y="192" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="15" fill="#7f8da3">登录、验证、付款都用这个出口</text>
+
+  <!-- 第二行：其他国外 -->
+  <rect x="60" y="240" width="290" height="64" rx="14" fill="#241a3d" stroke="#4c3a78" stroke-width="1.5"/>
+  <text x="205" y="279" text-anchor="middle" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="21" font-weight="600" fill="#e4d9ff">其他国外网站</text>
+
+  <line x1="350" y1="272" x2="410" y2="272" stroke="#5b6b85" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <rect x="420" y="240" width="260" height="64" rx="14" fill="#241a3d" stroke="#4c3a78" stroke-width="1.5"/>
+  <text x="550" y="272" text-anchor="middle" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="21" font-weight="600" fill="#e4d9ff">你的订阅节点</text>
+  <text x="550" y="293" text-anchor="middle" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="15" fill="#a596c9">原来怎么用就怎么用</text>
+
+  <line x1="680" y1="272" x2="740" y2="272" stroke="#5b6b85" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <text x="760" y="277" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="20" fill="#aab7c9">普通国外网站</text>
+
+  <!-- 第三行：国内 -->
+  <rect x="60" y="340" width="290" height="64" rx="14" fill="#1a2334" stroke="#354158" stroke-width="1.5"/>
+  <text x="205" y="379" text-anchor="middle" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="21" font-weight="600" fill="#d5deea">国内网站</text>
+
+  <line x1="350" y1="372" x2="410" y2="372" stroke="#4a5568" stroke-width="2" marker-end="url(#arrowMuted)"/>
+
+  <rect x="420" y="340" width="260" height="64" rx="14" fill="#1a2334" stroke="#354158" stroke-width="1.5"/>
+  <text x="550" y="372" text-anchor="middle" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="21" font-weight="600" fill="#d5deea">直连</text>
+  <text x="550" y="393" text-anchor="middle" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="15" fill="#8d99ab">不绕一圈</text>
+
+  <line x1="680" y1="372" x2="740" y2="372" stroke="#4a5568" stroke-width="2" marker-end="url(#arrowMuted)"/>
+
+  <text x="760" y="377" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="20" fill="#aab7c9">国内网站</text>
+
+  <!-- 底部：闸门 -->
+  <rect x="60" y="424" width="1080" height="40" rx="10" fill="#10261f" stroke="#245b45" stroke-width="1.5"/>
+  <path d="M84 436 l8 3 v6 c0 5 -4 8 -8 10 c-4 -2 -8 -5 -8 -10 v-6 z" fill="none" stroke="#34d399" stroke-width="1.8"/>
+  <text x="106" y="450" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="17" fill="#9fe8c4">出口 / DNS / IPv6 / WebRTC 没有全部通过时，AI 域名直接拒绝——不会偷偷改走别的线路。</text>
+</svg>

@@ -1,0 +1,16 @@
+{
+  "name": "ain-clean-monorepo",
+  "private": true,
+  "version": "0.1.0",
+  "description": "AI Network Clean —— 从官方客户端还原出来的纯净版：自己的静态 IP + 自己的订阅，只接管 AI 流量",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}

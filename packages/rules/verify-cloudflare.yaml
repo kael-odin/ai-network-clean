@@ -1,0 +1,6 @@
+# verify-cloudflare.yaml · Cloudflare 人机验证 · 版本 [v1.2.0]
+# 共享域名:验证请求和 AI 主站必须是同一个 IP,否则容易反复弹验证。
+# 用到它的服务:Claude、ChatGPT
+# 必须与脚本里的 FALLBACK['verify-cloudflare'] 保持一致。
+payload:
+  - DOMAIN,challenges.cloudflare.com

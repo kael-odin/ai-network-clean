@@ -1,0 +1,24 @@
+# gemini-core.yaml · Gemini 与 Google AI Studio 主链路 · 版本 [v1.2.0]
+# 必须与脚本里的 FALLBACK['gemini-core'] 保持一致。上线前在真实账号下逐个功能抓包核对。
+# 只收 Gemini 专属的主机名,不加 google.com / googleapis.com / gstatic.com 整个后缀:
+# 会把搜索、YouTube 等大量无关的 Google 流量送到静态 IP。
+payload:
+  - DOMAIN,gemini.google.com             # Gemini 网页版
+  - DOMAIN-SUFFIX,gemini.google          # Gemini 介绍页
+  - DOMAIN,bard.google.com               # 旧入口,跳转到 Gemini
+  - DOMAIN,aistudio.google.com           # Google AI Studio
+  - DOMAIN,makersuite.google.com         # AI Studio 旧入口
+  - DOMAIN,alkalimakersuite-pa.clients6.google.com  # AI Studio 后端接口
+  - DOMAIN,generativelanguage.googleapis.com        # Gemini API(AI Studio 内调用模型)
+  # 2026-10-05 抓包(已登录的 Chrome,Gemini 首页 + 发消息 + AI Studio 新对话,页面能正常使用):
+  # 页面还请求了下列域名,当前走订阅原有规则,没有进静态 IP。都是共享域名,暂不加入:
+  #   带账号凭据的接口,与 Google 其他产品共用,加入会让其他 Google 产品的接口也走静态 IP:
+  #     waa-pa / signaler-pa / ogads-pa / people-pa .clients6.google.com、console.cloud.google.com、apis.google.com
+  #   静态资源和统计,不影响账号判断:
+  #     gemini.gstatic.com、www.gstatic.com、fonts.gstatic.com、fonts.googleapis.com、lh3.googleusercontent.com、
+  #     play.google.com、www.google.com、ogs.google.com、www.googletagmanager.com、www.google-analytics.com、
+  #     *.doubleclick.net、www.googleadservices.com
+  # 重新评估的触发条件:Gemini 出现地区限制、反复验证或账号异常提示时,先试加 waa-pa / signaler-pa 的 clients6 主机名
+  # 待抓包确认(确认后再启用,并同步 FALLBACK):
+  # - DOMAIN,content-push.googleapis.com       # 文件上传(本次没有测上传)
+  # 不在 V1 范围:notebooklm.google.com、notebooklm.google

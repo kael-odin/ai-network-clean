@@ -1,0 +1,8 @@
+# login-google.yaml · Google 账号登录 · 版本 [v1.2.0]
+# 共享域名:打开后,其他网站的 Google 登录也会走静态 IP。
+# 用到它的服务:Claude、ChatGPT(第三方登录);Gemini(账号本身就是 Google 账号)
+# 必须与脚本里的 FALLBACK['login-google'] 保持一致。
+payload:
+  - DOMAIN,accounts.google.com
+  - DOMAIN,oauth2.googleapis.com
+  # 待抓包确认:登录时同步 Cookie 的 accounts.youtube.com;登录页静态资源(gstatic)不需要同一 IP

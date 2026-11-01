@@ -1,0 +1,11 @@
+# pay-stripe.yaml · Stripe 付款 · 版本 [v1.2.0]
+# 共享域名:订阅付费时,付款请求和平时使用保持同一个 IP。
+# 用到它的服务:Claude、ChatGPT
+# 必须与脚本里的 FALLBACK['pay-stripe'] 保持一致。
+payload:
+  - DOMAIN-SUFFIX,stripe.com             # js.stripe.com、api.stripe.com 等
+  - DOMAIN-SUFFIX,stripe.network         # m.stripe.network
+  - DOMAIN-SUFFIX,stripecdn.com          # b.stripecdn.com 等 Stripe 自有静态资源
+  # 待抓包确认:Stripe 风控在部分付款流程中加载 hCaptcha(共享域名,其他网站也在用)
+  # - DOMAIN-SUFFIX,hcaptcha.com
+  # 待抓包确认:3D Secure 验证跳转到的发卡行页面(各银行不同,通常不建议加入)

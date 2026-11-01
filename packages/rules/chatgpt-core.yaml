@@ -1,0 +1,20 @@
+# chatgpt-core.yaml · ChatGPT 主链路 · 版本 [v1.2.0]
+# 必须与脚本里的 FALLBACK['chatgpt-core'] 保持一致。上线前在真实账号下逐个功能抓包核对。
+payload:
+  - DOMAIN-SUFFIX,chatgpt.com            # 网页版、接口(含 ab. / ws. 等子域)
+  - DOMAIN-SUFFIX,openai.com             # 登录(auth.openai.com)、API、平台、帮助中心、付款页(pay.openai.com)
+  - DOMAIN-SUFFIX,oaistatic.com          # 静态资源
+  - DOMAIN-SUFFIX,oaiusercontent.com     # 文件、图片等用户内容
+  - DOMAIN-SUFFIX,chat.com               # 跳转到 chatgpt.com
+  # 2026-10-05 抓包(已登录的免费版账号):首页、发消息、设置、升级方案页,请求的都在上面的规则内:
+  # chatgpt.com、bzr.openai.com、cdn.openai.com。未登录时还会请求 accounts.google.com(Google 一键登录,
+  # login-google 已覆盖)。页面加载的 149 个脚本里没有写死语音、验证码相关的域名,这些功能是按需加载的。
+  # 文件上传已实测:上传一个小文本文件,请求 chatgpt.com/backend-api/files 和
+  # sdmntpreastus.oaiusercontent.com(上传存储,在 oaiusercontent.com 规则内)。
+  # 还没测:语音、图片生成、付款(点升级后才加载 Stripe)、登录流程。
+  # 注意:自动化测试时 Chrome 窗口必须在前台。后台标签页的绘制被暂停,流式回复会一直停在「思考」。
+  # 待抓包确认(确认后再启用,并同步 FALLBACK):
+  # - DOMAIN-SUFFIX,chatgpt.livekit.cloud      # 语音对话
+  # - DOMAIN,openai-api.arkoselabs.com         # Arkose 人机验证(OpenAI Network 专用子域)
+  # - DOMAIN-SUFFIX,openaiapi-site.azureedge.net
+  # 不在 V1 范围:sora.com(Sora)

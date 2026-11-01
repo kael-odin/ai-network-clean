@@ -1,0 +1,11 @@
+{
+  "name": "@ain/rules",
+  "private": true,
+  "type": "commonjs",
+  "description": "AI Network 规则集与 Clash Verge Rev 扩展脚本模板",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "test": "node --test \"test/*.test.js\"",
+    "make-local": "node make-local-script.js"
+  }
+}
