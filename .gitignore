@@ -33,3 +33,6 @@ flow-preview.png
 # 根目录的临时截图
 /*.png
 packages/rules/*.local.js
+
+# 打包用的 Electron 运行时(临时)
+.electron-dist/

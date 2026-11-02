@@ -151,9 +151,10 @@ AI 核对  ok  Claude:203.0.113.10
 
 ```
 apps/desktop/release/AI-Network-Clean-Setup-0.1.0.exe
-135,580,376 字节 · SHA-256 1A499BAB883BE577802DC2EAEDA5C1DEEB0A0DBCB4AB6B8FFE68566FA1A31251
+135,503,692 字节 · SHA-256 D1750195DE7F9F28990D92BEFE4B2496BDA6C092ED49E974A6569EEECDAB952B
 ```
 
+- 安装包不包含源码映射（`dist/**/*.map` 已排除）。
 - NSIS 向导式、按用户安装；应用本体 `requestedExecutionLevel=highestAvailable`（TUN 需要，启动会弹 UAC）。
 - 安装包未签名，SmartScreen 可能提示。
 - 只支持 Windows；不提供静态 IP、订阅或任何线路。
