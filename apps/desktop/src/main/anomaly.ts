@@ -25,8 +25,9 @@ export function parseConnLine(line: string): ConnLine | null {
 // 认作 AI 网站的域名(用来发现「AI 网站没走独享 IP」)。只看 Claude(PM 10-23:ChatGPT、Gemini 只保留路由规则,不检测)
 const AI_SUFFIX = ['claude.ai', 'claude.com', 'anthropic.com', 'claudeusercontent.com'];
 export const isAiHost = (h: string): boolean => AI_SUFFIX.some((s) => h === s || h.endsWith('.' + s));
-// 客户端自己(出口核对、诊断)和内核自己的连接不算
-const SELF = /^(AI Network\.exe|mihomo.*|electron\.exe)$/i;
+// 客户端自己(出口核对、诊断)和内核自己的连接不算。
+// 客户端进程名是「AI Network Clean.exe」(productName),不是 ain-clean,按前缀认,免得自己的出口核对被记成 AI 连接
+const SELF = /^(AI Network|ain-clean|mihomo.*|electron\.exe)$/i;
 
 // 内核连不上时的一行:[TCP] dial AI Network 放行 (match RuleSet/x) 198.18.0.1:52000(chrome.exe) --> claude.ai:443 error: … i/o timeout
 const FAIL = /\[(TCP|UDP)\] dial (.+?) (?:\(match [^)]*\) )?\S+?(?:\(([^)]+)\))? --> (\S+):(\d+) error: (.*?)"?\s*$/;

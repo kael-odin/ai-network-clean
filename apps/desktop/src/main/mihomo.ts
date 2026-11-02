@@ -1,9 +1,10 @@
 // 内置 mihomo 内核:找二进制、准备工作目录(地理数据库)、写配置、启动/停止、经控制接口查状态
 import { spawn, type ChildProcess } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, writeFileSync, appendFileSync, renameSync, rmSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, writeFileSync, renameSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { buildConfig, configText, subProvider, AI_GROUP, FRONT_GROUP, PROXY_GROUP, AUTO_GROUP, type OwnSub } from './config.ts';
+import { createLogFile, type LogFile } from './logfile.ts';
 import type { AiRoutes, UserRule, Line, SubSummary, NodeInfo, NodeList } from '../shared/ipc.ts';
 import { regionOf } from './regions.ts';
 
@@ -62,6 +63,8 @@ export class Mihomo {
   #controllerPort = 0;
   #mixedPort = 0;
   #log: string;
+  #logFile: LogFile;
+  #logBytes = 0;
   #tail: string[] = [];
   hasLine = false;
   // 最近一次「AI 出口」的拨号结果。select 组没有测试 URL,mihomo 的 /group/:name/delay 对它不生效,
@@ -74,12 +77,14 @@ export class Mihomo {
   constructor(o: MihomoOptions) {
     this.#o = o;
     this.#log = join(o.workDir, 'mihomo.log');
+    this.#logFile = createLogFile(this.#log);
   }
 
   get running(): boolean { return this.#child !== null; }
   get pid(): number | null { return this.#child?.pid ?? null; }
   get mixedPort(): number { return this.#mixedPort; }
   get recentLog(): string { return this.#tail.join('\n'); }
+  get logSize(): number { return this.#logBytes; }
   // TUN 没起来(被别的 VPN 占着地址):必须换成本地代理模式重启,否则所有出站都会绑到错网卡
   get tunFailed(): boolean { return this.#tail.some((l) => l.includes('Start TUN listening error')); }
 
@@ -98,13 +103,17 @@ export class Mihomo {
     for (const sub of input.ownSubs ?? []) if (!sub.dns?.prefilled) rmSync(join(this.#o.workDir, 'proxies', `${subProvider(sub.id)}.yaml`), { force: true });
     this.#subs = (input.ownSubs ?? []).map((x) => ({ id: x.id, name: x.name }));
     try { renameSync(this.#log, this.#log.replace(/\.log$/, '.prev.log')); } catch { /* 第一次启动 */ }
+    this.#logFile.close();
     writeFileSync(this.#log, `[${new Date().toISOString()}] 启动 ${bin}\n`);
+    this.#logFile = createLogFile(this.#log);
     this.#tail = [];
     const child = spawn(bin, ['-d', this.#o.workDir, '-f', configPath], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     this.#child = child;
     const onData = (buf: Buffer) => {
       const s = buf.toString('utf8');
-      appendFileSync(this.#log, s);
+      // 异步写盘 + 8MB 轮转:跑一整天也不会把主进程卡在同步 I/O 上,日志也不会无限长
+      this.#logFile.write(s);
+      this.#logBytes = this.#logFile.size;
       this.#tail = this.#tail.concat(s.split('\n').filter((l) => l)).slice(-120);
       if (this.onLine) for (const l of s.split('\n')) if (l.includes(' --> ')) this.onLine(l);
     };

@@ -2,6 +2,7 @@
 // 纯净版:没有账号、没有设备激活、没有计费、没有遥测、没有自动更新
 import { app, BrowserWindow, ipcMain, session, shell, Tray, Menu, nativeImage, clipboard, screen, Notification, dialog, powerMonitor } from 'electron';
 import { createConnLog } from './connlog.ts';
+import { createStats, describeStats } from './stats.ts';
 import { decideGate } from './gate.ts';
 import { claudeSeenToday, isDesktop, listClaude, parseClaudeStatus, pickClaude, STATUS_URL } from './claude.ts';
 import { createConnTracker } from './conns.ts';
@@ -54,6 +55,7 @@ const connLog = createConnLog(userData());
 const sysDns = createSysDns(userData());
 const sysProxy = createSysProxy(userData());
 const anomalies = createAnomalyLog(userData());
+const stats = createStats();
 const lineFail = createLineFail();
 const conns = createConnTracker();
 // 身份隔离:真实位置是 ~/.claude、~/.claude.json、%APPDATA%\Claude;槽在用户数据目录里
@@ -114,6 +116,7 @@ const state: AppState = {
   packaged: app.isPackaged,
   tunAvailable: false,
   externalTun: null,
+  stats,
 };
 
 let lastOtherTun: string | null = null;
@@ -122,11 +125,25 @@ const lineReason = (): string | null => {
   return c ? reasonText(c, state.settings.line.viaNode) : null;
 };
 
-function push(): void {
+// 状态推送:以前每次 log()/检测/轮询都同步把整个 AppState(含日志、连接列表)序列化发给两个窗口,
+// 托盘窗口隐藏时也照发。改成合并到 80ms 一次、隐藏的窗口不发,打开时自己拉一次最新状态
+let pushTimer: NodeJS.Timeout | null = null;
+function sendState(): void {
+  stats.logBytes = mihomo.logSize;
+  state.stats = stats;
   state.conn.downReason = state.conn.lineUp === false ? lineReason() : null;
-  win?.webContents.send('state', state);
-  trayWin?.webContents.send('state', state);
+  if (win && !win.isDestroyed()) win.webContents.send('state', state);
+  if (trayWin && !trayWin.isDestroyed() && trayWin.isVisible()) trayWin.webContents.send('state', state);
   updateTray();
+}
+function push(): void {
+  if (pushTimer) return;
+  pushTimer = setTimeout(() => { pushTimer = null; sendState(); }, 80);
+}
+// 窗口刚打开/托盘刚弹出时立刻给一份,不能等节流
+function pushNow(): void {
+  if (pushTimer) { clearTimeout(pushTimer); pushTimer = null; }
+  sendState();
 }
 
 function log(kind: string, text: string): void {
@@ -311,6 +328,7 @@ async function connectOnce(retry = true, keepDns = false): Promise<void> {
   state.conn = { ...IDLE_CONN, status: 'starting', mode: tun ? 'tun' : 'proxy', expectedIp: s.line.exitIp || null, warning };
   state.protect = null;
   state.aiCheck = null;
+  stats.connects++;
   if (retry) log('连接', `开始连接(${tun ? '虚拟网卡' : '本地代理'}模式${other ? `,检测到 ${other}` : ''})`);
   push();
 
@@ -453,6 +471,7 @@ async function connectOnce(retry = true, keepDns = false): Promise<void> {
     // 连接失败:系统代理也要还原,否则浏览器一直指向一个没有程序在听的端口
     await restoreOwnSystemProxy();
     state.conn = { ...state.conn, status: 'failed', error: errorMessage(e) };
+    stats.connectFailures++;
     log('连接失败', errorMessage(e).split('\n')[0].slice(0, 200));
     if (!win?.isVisible()) notify('没能连上', errorMessage(e).split('\n')[0].slice(0, 120));
     push();
@@ -485,6 +504,7 @@ async function disconnect(): Promise<void> {
 async function recover(code: number | null, tail: string): Promise<void> {
   recovering = true;
   try {
+    stats.autoRecovers++;
     log('意外断开', `网络组件意外退出(代码 ${code}),正在自动重连;重连期间 AI 网站暂时打不开`);
     notify('网络组件意外退出', '正在自动重新连接，期间 AI 网站暂时打不开。');
     void sysDns.flush().catch(() => {});
@@ -492,7 +512,7 @@ async function recover(code: number | null, tail: string): Promise<void> {
       state.conn = { ...state.conn, status: 'starting', lineUp: null, warning: `网络组件意外退出，正在自动重连（第 ${i} 次）…` };
       push();
       await connect(true, true).catch(() => {});
-      if (state.conn.status === 'connected') { log('恢复', `自动重连成功(第 ${i} 次)`); notify('已重新连接', '网络组件已恢复，AI 网站可以继续使用。'); return; }
+      if (state.conn.status === 'connected') { stats.reconnected++; log('恢复', `自动重连成功(第 ${i} 次)`); notify('已重新连接', '网络组件已恢复，AI 网站可以继续使用。'); return; }
       if (state.conn.status === 'disconnected') return;
       await new Promise((ok) => setTimeout(ok, 3000));
     }
@@ -547,6 +567,7 @@ async function check(): Promise<void> {
 let checking: Promise<void> | null = null;
 async function lightCheck(): Promise<void> {
   if (state.conn.status !== 'connected' || checking) return;
+  stats.lightChecks++;
   let changed = false;
   checking = (async () => {
     const prev = { exitIp: state.conn.exitIp, error: state.conn.error };
@@ -569,6 +590,7 @@ function runChecks(): Promise<void> {
   if (!mihomo.running || state.conn.status !== 'connected') return Promise.resolve();
   checking ??= (async () => {
     lastFullAt = Date.now();
+    stats.fullChecks++;
     if (state.aiCheck?.state !== 'done') state.aiCheck = { state: 'waiting', reason: null, sites: [] };
     push();
     await check();
@@ -601,6 +623,7 @@ function runChecks(): Promise<void> {
     if (Date.now() - leakSeenAt < 60_000) notOk.push(leakText || '有 AI 连接没走静态 IP');
     if (notOk.length && hasLine()) {
       await mihomo.setGate(false).catch(() => {});
+      stats.gateBlocks++;
       state.aiCheck = { state: 'blocked', reason: notOk.join('、'), sites: [] };
       log('拦截 AI', `${notOk.join('、')},AI 流量已拦截(其他网站照常)${reasons ? `。原因:${reasons}` : ''}`);
       if (wasOpen) notify('AI 流量已拦截', `${notOk.join('、')}，为保护网络身份已拦截 AI 流量。`);
@@ -611,7 +634,7 @@ function runChecks(): Promise<void> {
       push();
       return;
     }
-    if (hasLine()) await mihomo.setGate(true).catch(() => {});
+    if (hasLine()) { await mihomo.setGate(true).catch(() => {}); stats.gateOpens++; }
     quickRetried = false;
     state.aiCheck = { state: 'done', reason: null, sites: [], warn: warn.length ? warn.join('、') : null };
     if (!wasOpen) log('放行 AI', warn.length ? `静态 IP 出口、DNS 防护通过,AI 流量已放行;本地代理模式下${warn.join('、')}(只提醒)` : '防护都通过,AI 流量已放行');
@@ -676,6 +699,7 @@ function runProtect(): Promise<void> {
     const tun = state.conn.mode === 'tun';
     const dnsCheck = tun ? await sysDns.verify().catch(() => ({ reverted: [] as string[], added: [] as string[] })) : { reverted: [], added: [] };
     if (dnsCheck.added.length) log('接管 DNS', `新连上的 ${dnsCheck.added.join('、')} 的 DNS 也临时指到客户端,断开时恢复`);
+    if (dnsCheck.reverted.length) stats.dnsReverts += dnsCheck.reverted.length;
     if (dnsCheck.reverted.length) log('接管 DNS', `${dnsCheck.reverted.join('、')} 的 DNS 被别的软件改回去了,已重新指到客户端`);
     const [routeStep, ipv6Item, webrtcItem, conflictItem] = await Promise.all([
       tun ? checkRoutes(hasPublicIpv6(networkInterfaces())) : Promise.resolve(null),
@@ -706,10 +730,12 @@ function runProtect(): Promise<void> {
 // 每 30 秒的本地快检:不看网络,只看网卡 DNS 有没有被改回、路由还在不在
 async function quickLocal(): Promise<void> {
   if (state.conn.status !== 'connected' || checking || protecting) return;
+  stats.quickChecks++;
   if (state.conn.mode === 'tun') {
     const v = await sysDns.verify().catch(() => null);
     if (v?.added.length) log('接管 DNS', `新连上的 ${v.added.join('、')} 的 DNS 也临时指到客户端,断开时恢复`);
     if (v?.reverted.length) {
+      stats.dnsReverts += v.reverted.length;
       log('接管 DNS', `${v.reverted.join('、')} 的 DNS 被别的软件改回去了,已重新指到客户端,马上重新检测`);
       await mihomo.setGate(false).catch(() => {});
       state.aiCheck = { state: 'blocked', reason: 'DNS 被别的软件改回去了,正在重新检测', sites: state.aiCheck?.sites ?? [] };
@@ -762,6 +788,7 @@ function startDriftWatch(): void {
   // 订阅定时重拉:机场节点/到期状态会变,连着一整天时不能只靠启动那一次(思路来自 clash-verge-rev 的定时任务)
   subTimer = setInterval(() => {
     if (state.conn.status !== 'connected' || enabledSubs(state.settings).length === 0) return;
+    stats.subRefreshes++;
     void mihomo.refreshUserSub().then(() => { log('节点', '已定时重拉订阅'); void syncNode(); }).catch(() => {});
   }, 6 * 3_600_000);
   netTimer = setInterval(() => {
@@ -769,6 +796,7 @@ function startDriftWatch(): void {
     if (sig === netSig) return;
     netSig = sig;
     if (state.conn.status !== 'connected') return;
+    stats.netChanges++;
     log('网络变化', '检测到网络变化(换网或网卡变动),重新检测防护');
     setTimeout(() => void runChecks(), 3000);
   }, 15_000);
@@ -884,13 +912,22 @@ async function runClaudeCode(): Promise<void> {
 }
 
 // ---------- 泄漏监控(每次请求都把关) ----------
+// 内核每输出一行连接日志就喂给异常记录。以前这里没接:mihomo.onLine 一直是 null、anomalies.feed 从没被调用过,
+// 「AI 连接没走静态 IP 就立刻关闸」这条防线实际没生效,anomalies.jsonl 永远是空的
+mihomo.onLine = (line) => {
+  if (state.conn.status !== 'connected') return;
+  anomalies.feed(line, state.aiCheck?.state === 'blocked' ? (state.aiCheck.reason ?? '') : null);
+};
+
 let leakSeenAt = 0;
 let leakText = '';
 anomalies.onLeak((a) => {
   if (!hasLine()) return;
   leakSeenAt = Date.now();
   leakText = `${a.proc} 访问 ${a.host} 没走静态 IP(${a.reason})`;
+  stats.leaks++;
   if (state.conn.status !== 'connected' || state.aiCheck?.state === 'blocked') return;
+  stats.gateBlocks++;
   void mihomo.setGate(false).catch(() => {});
   state.aiCheck = { state: 'blocked', reason: leakText, sites: state.aiCheck?.sites ?? [] };
   log('拦截 AI', `${leakText},AI 流量已拦截(其他网站照常)`);
@@ -978,6 +1015,7 @@ function showWindow(page?: string): void {
   win!.show();
   win!.focus();
   if (page) win!.webContents.send('nav', page);
+  pushNow();
 }
 
 function createTrayWindow(): void {
@@ -1011,6 +1049,7 @@ function toggleTrayWindow(): void {
   trayWin!.setPosition(x, y);
   trayWin!.show();
   trayWin!.focus();
+  pushNow();
 }
 
 function createTray(): void {
@@ -1022,11 +1061,16 @@ function createTray(): void {
   updateTray();
 }
 
+// 托盘菜单只在「连接状态 + 静态 IP 可用性」变化时重建:每次推送都 build 一遍菜单是白费
+let trayMenuKey = '';
 function updateTray(): void {
   if (!tray) return;
   const c = state.conn.status;
   const connected = c === 'connected';
   tray.setToolTip(`AI Network Clean · ${connected ? (state.conn.lineUp === false ? '静态 IP 不可用' : '已连接') : c === 'starting' ? '连接中' : '未连接'}`);
+  const key = `${c}|${state.conn.lineUp}|${isReady()}`;
+  if (key === trayMenuKey) return;
+  trayMenuKey = key;
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: '打开主窗口', click: () => showWindow() },
     { type: 'separator' },
@@ -1246,6 +1290,8 @@ handle('line.test', async (_e, line: Line) => {
   return r;
 });
 handle('claude.dismiss', () => { state.claudeApps = null; push(); });
+// 长跑指标(不写盘、不上报):界面和 tools/soak.mjs 都能读
+handle('stats.get', () => ({ ...stats, logBytes: mihomo.logSize }));
 
 // 诊断报告里不能带真实网络身份:出口 IP 用来说明问题,但要能发给别人看
 const maskIp = (s: string): string => s
@@ -1263,6 +1309,7 @@ handle('diag.copy', () => {
     `连接 ${c.status} · 模式 ${c.mode} · 线路 ${c.lineUp} · 出口 ${c.exitIp ? maskIp(c.exitIp) : '-'}${c.node ? ` · 节点 ${c.node}` : ''}`,
     c.warning ? `提示:${c.warning}` : '', c.error ? `错误:${c.error}` : '',
     connectTimings.length ? `最近一次连接各步(累计用时):${connectTimings.join(' → ')}` : '',
+    `运行指标:${describeStats(stats)}`,
     `设置:${JSON.stringify({ ...s, line: safeLine, subs: s.subs.map((x) => `${x.name}(${safeHost(x.url) ?? '格式不对'})${x.enabled ? '' : '·未用'}`) })} · 其他代理软件:${lastOtherTun ?? '无'}`,
     '',
     ...(state.diag ? [`诊断 ${state.diag.at}:${state.diag.summary}`, ...state.diag.steps.map((x) => `  [${x.state}] ${x.title}:${x.detail}`), ...state.diag.advice.map((a) => `  建议:${a}`), ''] : []),

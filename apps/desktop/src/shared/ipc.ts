@@ -308,6 +308,25 @@ export interface SplitRow {
 }
 
 // ---------- 界面状态 ----------
+// 运行指标(长跑观察用):进程起来之后累计发生了什么
+export interface RuntimeStats {
+  startedAt: string;
+  connects: number;
+  connectFailures: number;
+  autoRecovers: number;
+  reconnected: number;
+  fullChecks: number;
+  lightChecks: number;
+  quickChecks: number;
+  gateOpens: number;
+  gateBlocks: number;
+  leaks: number;
+  dnsReverts: number;
+  netChanges: number;
+  subRefreshes: number;
+  logBytes: number;
+}
+
 export interface AppState {
   step: 'setup' | 'ready';
   conn: ConnState;
@@ -336,6 +355,7 @@ export interface AppState {
   tunAvailable: boolean;     // 管理员权限 + 没有别的虚拟网卡
   // 别的程序的虚拟网卡(多半是 Clash)正占着默认路由:本客户端的「直连」其实会经它出去
   externalTun: { name: string; description: string } | null;
+  stats: RuntimeStats;       // 长跑指标(内存里累计,不写盘)
 }
 
 // ---------- preload 暴露的接口 ----------
