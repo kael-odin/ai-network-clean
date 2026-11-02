@@ -3,8 +3,9 @@
 //   默认装到 apps/desktop/resources/,可用 AIN_RES_DIR 指定别处
 //   已有文件默认跳过,加 --force 重新下载
 //   GitHub 下载慢是常态;也可以自己下好,把文件放进目标目录
+import { createHash } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
-import { mkdtemp, mkdir, readdir, rename, rm, stat, copyFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readdir, readFile, rename, rm, stat, copyFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,8 +22,14 @@ const MIHOMO_VERSION = 'v1.19.32';
 const MIHOMO_ZIP = `https://github.com/MetaCubeX/mihomo/releases/download/${MIHOMO_VERSION}/mihomo-windows-amd64-${MIHOMO_VERSION}.zip`;
 const GEO_BASE = 'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest';
 
+// 内核是要以管理员身份运行的二进制:下完必须对得上仓库里记的 SHA-256。
+// MetaCubeX 不发签名,所以这个值只能由维护者从发布页核对一次后填进来;没填时脚本只打印实际哈希、并提醒你核对,不会假装校验过。
+// 换版本时:先跑一遍 --force,拿打印出来的值到 GitHub Release 页核对,再更新这里
+const MIHOMO_SHA256 = {
+  'mihomo-windows-amd64-v1.19.32.zip': '',
+};
 const FILES = [
-  { name: 'mihomo.exe', kind: 'zip', url: MIHOMO_ZIP, min: 20 * 1024 * 1024 },
+  { name: 'mihomo.exe', kind: 'zip', url: MIHOMO_ZIP, min: 20 * 1024 * 1024, sha: MIHOMO_SHA256['mihomo-windows-amd64-v1.19.32.zip'] || '' },
   { name: 'geoip.dat', kind: 'raw', url: `${GEO_BASE}/geoip.dat`, min: 1024 * 1024 },
   { name: 'geosite.dat', kind: 'raw', url: `${GEO_BASE}/geosite.dat`, min: 512 * 1024 },
   { name: 'Country.mmdb', kind: 'raw', url: `${GEO_BASE}/country.mmdb`, min: 512 * 1024 },
@@ -96,7 +103,17 @@ for (const f of FILES) {
     }
     const got = await sizeOf(dest);
     if (got < f.min) throw new Error(`文件太小(${got} 字节),可能下载被拦截`);
-    console.log(`✓ ${f.name} 完成(${mb(got)})`);
+    const sha = createHash('sha256').update(await readFile(dest)).digest('hex');
+    if (f.sha) {
+      if (sha !== f.sha) {
+        await rm(dest, { force: true });
+        throw new Error(`SHA-256 对不上(实际 ${sha}),已删除。可能是上游换了发布包或被中间人替换,核对后再用`);
+      }
+      console.log(`✓ ${f.name} 完成(${mb(got)}),SHA-256 校验通过`);
+    } else {
+      console.log(`✓ ${f.name} 完成(${mb(got)}),SHA-256 ${sha}`);
+      if (f.kind === 'zip') console.warn('  ⚠ 这个文件没有登记校验值:请到 GitHub Release 页核对上面的 SHA-256 后填进 fetch-resources.mjs,再打包分发');
+    }
     done++;
   } catch (e) {
     failed++;

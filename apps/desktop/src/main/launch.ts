@@ -29,7 +29,7 @@ export async function launchClaudeCode(port: number): Promise<LaunchResult> {
   const env = { ...process.env, ...proxyEnv(port) };
   const probe = await run('where', ['claude']);
   const hasCli = probe.ok && probe.out.trim().length > 0;
-  const cmd = hasCli ? 'claude' : 'claude';
+  const cmd = 'claude';
   // 偏好 Windows Terminal,没有就退回 conhost
   const wt = await run('where', ['wt.exe']);
   try {
@@ -106,6 +106,7 @@ export interface WebOptions {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const safeOrigin = (u: string): string => { try { return new URL(u).origin + new URL(u).pathname; } catch { return ''; } };
 
 // 页面还没就绪时 attach/sendCommand 会一直等不到响应,所以:就绪后再调,并且加超时
 async function applyRegion(wc: Electron.WebContents, country: string | null): Promise<string | null> {
@@ -151,6 +152,17 @@ export async function openClaudeWeb(parent: BrowserWindow | null, port: number, 
     webPreferences: { partition: part, contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
   webWin.on('closed', () => { webWin = null; });
+  // 内置窗口是个远程页面:只让它待在 Claude 的域名里,任何权限请求(定位、麦克风、通知…)默认拒绝
+  const allowedOrigin = /^https:\/\/([a-z0-9-]+\.)*(claude\.ai|claude\.com|anthropic\.com)$/i;
+  webWin.webContents.on('will-navigate', (e, url) => { if (!allowedOrigin.test(safeOrigin(url))) e.preventDefault(); });
+  webWin.webContents.setWindowOpenHandler(({ url }) => {
+    if (!allowedOrigin.test(safeOrigin(url))) return { action: 'deny' };
+    // 登录/付款跳转交给系统浏览器(它走系统代理或客户端代理环境),不在内置窗口里再开
+    void shell.openExternal(url).catch(() => {});
+    return { action: 'deny' };
+  });
+  s.setPermissionRequestHandler((_wc, _permission, cb) => cb(false));
+  s.setPermissionCheckHandler(() => false);
   const follow = opts.followRegion !== false && !!opts.country && !!TZ_BY_COUNTRY[opts.country];
   const planned = follow ? `${TZ_BY_COUNTRY[opts.country!]}${LOCALE_BY_COUNTRY[opts.country!] ? ' / Accept-Language: ' + LOCALE_BY_COUNTRY[opts.country!] : ''}` : null;
   const wc = webWin.webContents;

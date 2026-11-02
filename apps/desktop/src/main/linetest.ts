@@ -128,10 +128,20 @@ async function httpProbe(line: Line, mixedPort?: number): Promise<{ steps: LineT
 export async function testLine(line: Line, opts: { mixedPort?: number } = {}): Promise<LineTestResult> {
   const at = new Date().toISOString();
   const via: 'direct' | 'node' = opts.mixedPort ? 'node' : 'direct';
-  if (line.type === 'none' || !line.server || !line.port) {
-    return { at, via, protocol: 'unknown', steps: [{ key: 'cfg', label: '配置', ok: false, detail: '还没填静态 IP' }], raw: '' };
-  }
-  const reach = await open(line, opts.mixedPort);
+  const raw = line as unknown as Partial<Record<keyof Line, unknown>> | null;
+  // 界面传来的线路当不可信输入:字段类型不对、地址/端口不合法、账号密码超长,一律不动手(会拼进 CONNECT 请求行)
+  const bad = (why: string): LineTestResult => ({ at, via, protocol: 'unknown', steps: [{ key: 'cfg', label: '配置', ok: false, detail: why }], raw: '' });
+  if (!raw || (raw.type !== 'socks5' && raw.type !== 'http')) return bad('还没填静态 IP');
+  const server = typeof raw.server === 'string' ? raw.server.trim() : '';
+  const port = Number(raw.port);
+  if (!server || server.length > 253 || /[\s\r\n/\\]/.test(server)) return bad('地址格式不对');
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return bad('端口不对');
+  const username = typeof raw.username === 'string' ? raw.username : '';
+  const password = typeof raw.password === 'string' ? raw.password : '';
+  if (username.length > 255 || password.length > 255) return bad('账号或密码太长(SOCKS5 上限 255 字节)');
+  const line2: Line = { type: raw.type, server, port, username, password, exitIp: '', viaNode: false };
+
+  const reach = await open(line2, opts.mixedPort);
   if (!reach.sock) {
     return {
       at, via, protocol: 'unknown',
@@ -142,11 +152,11 @@ export async function testLine(line: Line, opts: { mixedPort?: number } = {}): P
   try { reach.sock.destroy(); } catch { /* */ }
   const base: LineTestStep[] = [{
     key: 'reach', label: '端口连通', ok: true,
-    detail: via === 'node' ? `已经由订阅节点连到 ${line.server}:${line.port}` : `已直连到 ${line.server}:${line.port}`,
+    detail: via === 'node' ? `已经由订阅节点连到 ${line2.server}:${line2.port}` : `已直连到 ${line2.server}:${line2.port}`,
   }];
 
-  const s5 = await socks5(line, opts.mixedPort);
+  const s5 = await socks5(line2, opts.mixedPort);
   if (s5.ok || s5.isSocks5) return { at, via, protocol: 'socks5', steps: [...base, ...s5.steps], raw: s5.raw };
-  const h = await httpProbe(line, opts.mixedPort);
+  const h = await httpProbe(line2, opts.mixedPort);
   return { at, via, protocol: h.ok ? 'http' : 'unknown', steps: [...base, ...s5.steps, ...h.steps], raw: [s5.raw, h.raw].filter(Boolean).join('\n---\n') };
 }

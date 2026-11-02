@@ -13,9 +13,20 @@ files:
   - '!dist/**/*.map'
   - build/icon.png
   - package.json
-  - node_modules/**/*
 
 asar: true
+
+# 只留运行必需的打包内容。主进程/预加载已经被 esbuild 完整打包,运行时不需要 node_modules;
+# electron 由 electron-builder 自己处理。以前把整个 node_modules 打进去是纯多余
+# Electron fuses:去掉用环境变量给主进程注入代码的入口。
+# runAsNode 保留:DNS 看守进程靠 ELECTRON_RUN_AS_NODE 以 Node 方式跑(见 sysdns.ts);等做到权限分离后可以关掉
+electronFuses:
+  runAsNode: true
+  enableCookieEncryption: false
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+  enableEmbeddedAsarIntegrityValidation: false
+  onlyLoadAppFromAsar: true
 
 # 内核和地理数据库放在 resources/(不打进 asar,内核要能直接执行)
 extraResources:
