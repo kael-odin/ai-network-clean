@@ -57,7 +57,8 @@ export function parseClaudeStatus(json: unknown, now = new Date()): ClaudeStatus
 
 // Claude 桌面版:微软商店版装在 WindowsApps\Claude_…,老的安装包版在 AnthropicClaude 下。
 // 其他叫 claude.exe 的是 Claude Code(命令行);桌面版自带的 Claude Code 是桌面版的子进程,不单独算
-const isDesktop = (p: string) => /\\WindowsApps\\Claude_|\\AnthropicClaude\\/i.test(p);
+// 路径按 / 和 \ 都认(Windows 路径是反斜杠),主进程和身份隔离共用这一份判断
+export const isDesktop = (p: string) => /[\\/]WindowsApps[\\/]Claude_|[\\/]AnthropicClaude[\\/]/i.test(p);
 
 // 找连接前(before 之前)就开着的 Claude:桌面版取主进程(父进程不是桌面版的那个),命令行的数一下个数
 export function pickClaude(list: ClaudeProc[], before: number): ClaudeApps {
