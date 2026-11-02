@@ -1,0 +1,7 @@
+{
+  "name": "@ain/rules",
+  "private": true,
+  "type": "commonjs",
+  "description": "AI 分流脚本模板（Clash Verge Rev 扩展脚本）",
+  "engines": { "node": ">=24" }
+}

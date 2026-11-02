@@ -1,0 +1,35 @@
+# 依赖与构建产物
+node_modules/
+dist/
+release/
+*.tsbuildinfo
+
+# 本机运行时/测试留下的东西(可能含真实 IP、订阅、登录态)
+.demo-prof/
+.tmp-pkg-prof/
+.edgetest/
+.testdata/
+verify/
+docs/images/
+*.log
+p-*.png
+shot-*.png
+
+# 内核与地理数据库:体积大且有独立许可证,用 npm run resources 自行下载
+apps/desktop/resources/mihomo.exe
+apps/desktop/resources/*.dat
+apps/desktop/resources/*.mmdb
+apps/desktop/resources/*.db
+
+# 系统垃圾
+.DS_Store
+Thumbs.db
+
+# 本地预览/临时文件
+.res-test/
+.svg-preview.html
+flow-preview.png
+
+# 根目录的临时截图
+/*.png
+packages/rules/*.local.js

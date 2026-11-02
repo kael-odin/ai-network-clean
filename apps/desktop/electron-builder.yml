@@ -1,0 +1,40 @@
+# 打包配置:appId 独立,不会覆盖其他安装
+appId: local.ain.clean
+productName: AI Network Clean
+copyright: AI Network Clean
+artifactName: AI-Network-Clean-Setup-${version}.${ext}
+
+directories:
+  buildResources: build
+  output: release
+
+files:
+  - dist/**/*
+  - build/icon.png
+  - package.json
+  - node_modules/**/*
+
+asar: true
+
+# 内核和地理数据库放在 resources/(不打进 asar,内核要能直接执行)
+extraResources:
+  - from: resources
+    to: .
+    filter:
+      - '**/*'
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: build/icon.png
+  # TUN 虚拟网卡要管理员;没有权限时客户端自己退回本地代理模式
+  requestedExecutionLevel: highestAvailable
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: AI Network Clean
