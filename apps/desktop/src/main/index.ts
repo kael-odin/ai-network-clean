@@ -3,7 +3,7 @@
 import { app, BrowserWindow, ipcMain, session, shell, Tray, Menu, nativeImage, clipboard, screen, Notification, dialog, powerMonitor } from 'electron';
 import { createConnLog } from './connlog.ts';
 import { decideGate } from './gate.ts';
-import { claudeSeenToday, listClaude, parseClaudeStatus, pickClaude, STATUS_URL } from './claude.ts';
+import { claudeSeenToday, isDesktop, listClaude, parseClaudeStatus, pickClaude, STATUS_URL } from './claude.ts';
 import { createConnTracker } from './conns.ts';
 import { createLineFail, reasonText } from './linefail.ts';
 import { regionOf } from './regions.ts';
@@ -11,6 +11,7 @@ import { runSplitTest, TARGETS } from './splittest.ts';
 import { createAnomalyLog, isAbnormalEvent } from './anomaly.ts';
 import { createSysDns } from './sysdns.ts';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { homedir } from 'node:os';
 import { execFile } from 'node:child_process';
 import { createServer } from 'node:net';
@@ -232,6 +233,12 @@ const mark = (step: string) => { connectTimings.push(`${step} ${((Date.now() - c
 const hasLine = (s: Settings = state.settings): boolean => s.line.type !== 'none' && !!s.line.server && s.line.port > 0;
 const isReady = (s: Settings = state.settings): boolean => hasLine(s) || enabledSubs(s).length > 0;
 
+// 系统代理只有还指着我们时才还原:断开时已经还原过、或者用户自己又改过,都不要去动它
+async function restoreOwnSystemProxy(): Promise<void> {
+  const ours = await sysProxy.pointsTo(state.settings.mixedPort).catch(() => false);
+  if (ours) await sysProxy.restore().catch(() => {});
+}
+
 function connect(retry = true, keepDns = false): Promise<void> {
   connecting ??= connectOnce(retry, keepDns).finally(() => { connecting = null; });
   return connecting;
@@ -296,6 +303,8 @@ async function connectOnce(retry = true, keepDns = false): Promise<void> {
   const tunNote = state.externalTun
     ? `另一个虚拟网卡「${state.externalTun.name}」正在接管全局流量:本客户端的「直连」会经它出去,静态 IP 能不能连上由它决定`
     : null;
+  // 上面几次读系统状态都要几百毫秒,期间用户可能已经点了「断开」:取消时不能再改系统代理、不能再起内核
+  if (cancelled()) throw new Cancelled();
   const warning = other
     ? `${tunNote ? tunNote + '。' : ''}检测到「${other}」在运行:已改用本地代理模式,要完整接管请退出它再重新连接。`
     : !state.admin ? `没有管理员权限:本地代理模式,只接管浏览器(系统代理已指到 127.0.0.1:${s.mixedPort}),桌面程序接管不了。` : null;
@@ -311,6 +320,8 @@ async function connectOnce(retry = true, keepDns = false): Promise<void> {
     await sysProxy.restore().catch(() => {});
   } else {
     await sysProxy.take(s.mixedPort).then(() => log('接管系统代理', `系统代理已指到 127.0.0.1:${s.mixedPort}(断开时还原)`), () => {});
+    // take 之后才被取消:把刚改的系统代理还原,别让浏览器指向一个不会再起来的内核
+    if (cancelled()) { await restoreOwnSystemProxy(); throw new Cancelled(); }
   }
   const stale = await staleP;
   mark('清残留系统代理');
@@ -333,6 +344,8 @@ async function connectOnce(retry = true, keepDns = false): Promise<void> {
     autoRegion: s.autoRegion,
   };
 
+  // 这边继续等订阅节点、测速,期间断开:同样要把系统代理还原,否则浏览器指向没人听的端口
+  if (cancelled()) { await restoreOwnSystemProxy(); throw new Cancelled(); }
   try {
     const subDns = subs.length ? await subDnsP : [];
     if (subs.length) mark('客户端拉订阅取 DNS');
@@ -427,6 +440,7 @@ async function connectOnce(retry = true, keepDns = false): Promise<void> {
     restarting = false;
     if (e instanceof Cancelled || cancelled()) {
       if (!keepDns) await sysDns.restore().catch(() => {});
+      await restoreOwnSystemProxy();
       return;
     }
     if (retry && /订阅里没有节点/.test(errorMessage(e))) {
@@ -436,6 +450,8 @@ async function connectOnce(retry = true, keepDns = false): Promise<void> {
       return connectOnce(false, keepDns);
     }
     if (!keepDns) await sysDns.restore().catch(() => {});
+    // 连接失败:系统代理也要还原,否则浏览器一直指向一个没有程序在听的端口
+    await restoreOwnSystemProxy();
     state.conn = { ...state.conn, status: 'failed', error: errorMessage(e) };
     log('连接失败', errorMessage(e).split('\n')[0].slice(0, 200));
     if (!win?.isVisible()) notify('没能连上', errorMessage(e).split('\n')[0].slice(0, 120));
@@ -481,6 +497,7 @@ async function recover(code: number | null, tail: string): Promise<void> {
       await new Promise((ok) => setTimeout(ok, 3000));
     }
     await sysDns.restore().catch(() => {});
+    await restoreOwnSystemProxy();
     state.conn = { ...state.conn, status: 'failed', lineUp: null, error: `内核退出(代码 ${code}),自动重连没有成功\n${tail}` };
     log('意外断开', '自动重连 3 次都没成功,已改回网络设置;请重新连接');
     notify('AI 网站已禁止访问', '网络组件意外退出，自动重连没有成功。打开客户端重新连接。');
@@ -931,6 +948,9 @@ function createWindow(): void {
   });
   win.loadFile(join(__dirname, '../renderer/index.html'));
   win.on('session-end', onSessionEnd);
+  // 界面只该是本地的 index.html:不让它被导航到任何外部页面(否则远程页面会拿到 preload 的全部能力)
+  win.webContents.on('will-navigate', (e) => e.preventDefault());
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.on('close', (e) => {
     if (quitting) return;
     if (!state.settings.keepBackground) { quitting = true; app.quit(); return; }
@@ -968,6 +988,8 @@ function createTrayWindow(): void {
     webPreferences: { preload: join(__dirname, '../preload/index.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
   trayWin.loadFile(join(__dirname, '../renderer/index.html'), { hash: 'tray' });
+  trayWin.webContents.on('will-navigate', (e) => e.preventDefault());
+  trayWin.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   trayWin.on('blur', () => { trayWin?.hide(); trayHiddenAt = Date.now(); });
   trayWin.on('session-end', onSessionEnd);
   trayWin.on('closed', () => { trayWin = null; });
@@ -1017,11 +1039,23 @@ function updateTray(): void {
 }
 
 // ---------- IPC ----------
-ipcMain.handle('state', () => state);
-ipcMain.handle('connect', () => connect());
-ipcMain.handle('disconnect', () => disconnect());
-ipcMain.handle('check', async () => { log('重新检测', '手动触发重新检测'); await runChecks(); });
-ipcMain.handle('repair', async () => {
+// 所有 IPC 只接受本地界面(index.html)发来的调用:万一窗口里出现了别的页面,它拿不到 preload 的能力里去调这些接口
+const RENDERER_URL = pathToFileURL(join(__dirname, '../renderer/index.html')).href;
+const fromOwnPage = (frame: Electron.WebFrameMain | null): boolean => {
+  const url = frame?.url ?? '';
+  return url === RENDERER_URL || (url.startsWith('file://') && url.replace(/\\/g, '/').endsWith('/renderer/index.html'));
+};
+const handle = (channel: string, listener: Parameters<typeof ipcMain.handle>[1]): void => {
+  ipcMain.handle(channel, (e, ...args) => {
+    if (!fromOwnPage(e.senderFrame)) throw new Error('拒绝:调用不是来自客户端自己的界面');
+    return listener(e, ...args);
+  });
+};
+handle('state', () => state);
+handle('connect', () => connect());
+handle('disconnect', () => disconnect());
+handle('check', async () => { log('重新检测', '手动触发重新检测'); await runChecks(); });
+handle('repair', async () => {
   if (!mihomo.running) return;
   log('一键修复', '重载网络组件配置、重设 DNS、重新检测');
   await mihomo.reload(join(userData(), 'mihomo', 'config.json')).catch((e) => log('一键修复', '重载配置没成功:' + errorMessage(e)));
@@ -1035,8 +1069,8 @@ ipcMain.handle('repair', async () => {
   state.aiCheck = null;
   await runChecks();
 });
-ipcMain.handle('protect', () => runChecks());
-ipcMain.handle('diagnose', async () => {
+handle('protect', () => runChecks());
+handle('diagnose', async () => {
   state.diag = await diagnose({
     mihomo, session: checkSession(), expectedIp: state.settings.line.exitIp || null,
     hasIpv6: hasPublicIpv6(networkInterfaces()), mode: state.conn.mode, otherTun: lastOtherTun,
@@ -1045,8 +1079,8 @@ ipcMain.handle('diagnose', async () => {
   push();
   void runChecks();
 });
-ipcMain.handle('connections', () => conns.list());
-ipcMain.handle('split.test', async (): Promise<SplitRow[]> => {
+handle('connections', () => conns.list());
+handle('split.test', async (): Promise<SplitRow[]> => {
   if (state.conn.status !== 'connected') return [];
   const s = state.conn.mode === 'tun' ? session.defaultSession : session.fromPartition('system-net');
   if (state.conn.mode !== 'tun') await s.setProxy({ mode: 'system' }).catch(() => {});
@@ -1073,13 +1107,13 @@ ipcMain.handle('split.test', async (): Promise<SplitRow[]> => {
   return rows.map((r) => r.lane === 'ai' && r.expect === 'ip' && r.ip && mine && r.ip !== mine ? { ...r, good: false } : r);
 });
 
-ipcMain.handle('settings.set', (_e, patch: Partial<Settings>) => { applySettings(settingsStore.set(patch)); push(); });
-ipcMain.handle('settings.reset', async () => { await disconnect(); applySettings(settingsStore.reset()); push(); });
-ipcMain.handle('data.open', async () => { await shell.openPath(userData()); });
-ipcMain.handle('nodes.list', async () => { state.nodes = mihomo.running ? await mihomo.nodeList().catch(() => null) : null; return state.nodes; });
-ipcMain.handle('nodes.test', async () => { if (mihomo.running) await mihomo.checkUserSub(); state.nodes = mihomo.running ? await mihomo.nodeList().catch(() => null) : null; await syncNode(); return state.nodes; });
-ipcMain.handle('nodes.refresh', async () => { if (mihomo.running) await mihomo.refreshUserSub(); state.nodes = mihomo.running ? await mihomo.nodeList().catch(() => null) : null; await syncNode(); return state.nodes; });
-ipcMain.handle('nodes.select', async (_e, name: string) => {
+handle('settings.set', (_e, patch: Partial<Settings>) => { applySettings(settingsStore.set(patch)); push(); });
+handle('settings.reset', async () => { await disconnect(); applySettings(settingsStore.reset()); push(); });
+handle('data.open', async () => { await shell.openPath(userData()); });
+handle('nodes.list', async () => { state.nodes = mihomo.running ? await mihomo.nodeList().catch(() => null) : null; return state.nodes; });
+handle('nodes.test', async () => { if (mihomo.running) await mihomo.checkUserSub(); state.nodes = mihomo.running ? await mihomo.nodeList().catch(() => null) : null; await syncNode(); return state.nodes; });
+handle('nodes.refresh', async () => { if (mihomo.running) await mihomo.refreshUserSub(); state.nodes = mihomo.running ? await mihomo.nodeList().catch(() => null) : null; await syncNode(); return state.nodes; });
+handle('nodes.select', async (_e, name: string) => {
   const n = typeof name === 'string' ? name : '';
   applySettings(settingsStore.set({ ownNode: n }));
   if (mihomo.running) await mihomo.selectNode(n);
@@ -1102,19 +1136,19 @@ async function syncNode(): Promise<void> {
   push();
 }
 
-ipcMain.handle('cc.check', () => runClaudeCode());
-ipcMain.handle('cc.fix', async () => {
+handle('cc.check', () => runClaudeCode());
+handle('cc.fix', async () => {
   fixClaudeCode(state.settings.mixedPort);
   log('Claude Code', `把 Claude Code 的代理指到客户端(端口 ${state.settings.mixedPort}),原设置已备份`);
   await runClaudeCode();
 });
-ipcMain.handle('cc.undo', async () => {
+handle('cc.undo', async () => {
   undoClaudeCode();
   log('Claude Code', '撤销了对 Claude Code 代理的修正');
   await runClaudeCode();
 });
-ipcMain.handle('claude.running', async () => (await listClaude().catch(() => [])).length > 0);
-ipcMain.handle('claude.launch', async (_e, kind: 'code' | 'desktop' | 'web') => {
+handle('claude.running', async () => (await listClaude().catch(() => [])).length > 0);
+handle('claude.launch', async (_e, kind: 'code' | 'desktop' | 'web') => {
   const port = state.settings.mixedPort;
   if (!mihomo.running) return { ok: false, kind, detail: '还没连接:先连上,再从这里启动,子进程才会走静态 IP' };
   const r = kind === 'web'
@@ -1131,16 +1165,16 @@ ipcMain.handle('claude.launch', async (_e, kind: 'code' | 'desktop' | 'web') => 
   return r;
 });
 // 现在有哪些 Claude 在跑(桌面版用安装路径认,其余当命令行)
-const isDesktopPath = (p: string): boolean => /[\/]WindowsApps[\/]Claude_|[\/]AnthropicClaude[\/]/i.test(p);
+const isDesktopPath = isDesktop; // 判断只留一份(claude.ts)
 // 身份隔离
-ipcMain.handle('identity.list', (_e, deep?: boolean) => identities.list(deep === true));
-ipcMain.handle('identity.capture', async (_e, name: string) => {
+handle('identity.list', (_e, deep?: boolean) => identities.list(deep === true));
+handle('identity.capture', async (_e, name: string) => {
   const r = await identities.capture(String(name ?? ''));
   log('身份', `把当前 Claude 数据归档为新身份「${r.identities.find((x) => x.active)?.name ?? name}」`);
   push();
   return r;
 });
-ipcMain.handle('identity.activate', async (_e, id: string) => {
+handle('identity.activate', async (_e, id: string) => {
   const r = await identities.activate(String(id ?? ''));
   const nm = r.identities.find((x) => x.active)?.name ?? id;
   log('身份', `切换到身份「${nm}」`);
@@ -1149,11 +1183,11 @@ ipcMain.handle('identity.activate', async (_e, id: string) => {
   push();
   return r;
 });
-ipcMain.handle('identity.rename', (_e, id: string, name: string) => identities.rename(String(id ?? ''), String(name ?? '')));
-ipcMain.handle('identity.remove', (_e, id: string) => identities.remove(String(id ?? '')));
-ipcMain.handle('identity.kill', () => identities.killClaude());
+handle('identity.rename', (_e, id: string, name: string) => identities.rename(String(id ?? ''), String(name ?? '')));
+handle('identity.remove', (_e, id: string) => identities.remove(String(id ?? '')));
+handle('identity.kill', () => identities.killClaude());
 
-ipcMain.handle('claude.status', async () => {
+handle('claude.status', async () => {
   const apps = await listClaude().catch(() => []);
   state.claudeRun = {
     desktop: apps.some((a) => isDesktopPath(a.path)),
@@ -1162,12 +1196,12 @@ ipcMain.handle('claude.status', async () => {
   push();
   return state.claudeRun;
 });
-ipcMain.handle('claude.scan', async () => {
+handle('claude.scan', async () => {
   state.clean = await scanClaude();
   push();
   return state.clean;
 });
-ipcMain.handle('claude.clean', async (_e, ids: string[], backup: boolean) => {
+handle('claude.clean', async (_e, ids: string[], backup: boolean) => {
   await disconnect();
   const r = await cleanClaude(Array.isArray(ids) ? ids.map(String) : [], backup !== false, userData());
   log('清理 Claude 残留', `删除了 ${r.removed.length} 项${r.backupDir ? `,备份在 ${r.backupDir}` : ''}${r.errors.length ? `,${r.errors.length} 项失败` : ''}`);
@@ -1176,7 +1210,7 @@ ipcMain.handle('claude.clean', async (_e, ids: string[], backup: boolean) => {
   return r;
 });
 // 以管理员身份重启:先起一个延时的提权进程,再退出当前实例(否则单实例锁会吞掉新实例)
-ipcMain.handle('relaunchAsAdmin', async () => {
+handle('relaunchAsAdmin', async () => {
   if (process.platform !== 'win32') return { ok: false, detail: '只支持 Windows' };
   const exe = app.getPath('exe').replace(/'/g, "''");
   try {
@@ -1190,64 +1224,70 @@ ipcMain.handle('relaunchAsAdmin', async () => {
     return { ok: false, detail: (e as Error).message };
   }
 });
-ipcMain.handle('settings.backups', () => settingsStore.backups());
-ipcMain.handle('settings.restore', async (_e, name: string) => {
+handle('settings.backups', () => settingsStore.backups());
+handle('settings.restore', async (_e, name: string) => {
   const s = settingsStore.restore(String(name ?? ''));
   applySettings(s);
   log('设置', `已从备份恢复设置(${name})`);
   push();
 });
-ipcMain.handle('fpReset', () => {
+handle('fpReset', () => {
   const seed = Math.floor(Math.random() * 2 ** 31) + 1;
   applySettings(settingsStore.set({ fpSeed: seed, fpNoise: true }));
   log('指纹', `已重置内置窗口的指纹种子(${seed})`);
   push();
 });
-ipcMain.handle('env.recheck', async () => { state.env = buildEnvReport(exitCountry); push(); });
+handle('env.recheck', async () => { state.env = buildEnvReport(exitCountry); push(); });
 // 静态 IP 自检:经节点优先,内核没跑就直连
-ipcMain.handle('line.test', async (_e, line: Line) => {
+handle('line.test', async (_e, line: Line) => {
   const r = await testLine(line, mihomo.running ? { mixedPort: state.settings.mixedPort } : {});
   log('静态 IP 自检', `路径 ${r.via === 'node' ? '经节点' : '直连'} · ${r.steps.map((x) => `${x.label}:${x.ok === true ? 'OK' : x.ok === false ? '失败' : '未定'}`).join(' | ')}`);
   push();
   return r;
 });
-ipcMain.handle('claude.dismiss', () => { state.claudeApps = null; push(); });
+handle('claude.dismiss', () => { state.claudeApps = null; push(); });
 
-ipcMain.handle('diag.copy', () => {
+// 诊断报告里不能带真实网络身份:出口 IP 用来说明问题,但要能发给别人看
+const maskIp = (s: string): string => s
+  .replace(/\b(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\b/g, (_m, a: string, b: string, c: string) => `${a}.${b}.${c}.x`)
+  .replace(/\b([0-9a-f]{0,4}:){2,}[0-9a-f]{0,4}\b/gi, (m) => (m.includes('::') ? m : '[v6]'));
+
+handle('diag.copy', () => {
   const c = state.conn;
   const s = state.settings;
+  // 订阅链接带机场令牌,报告里只留主机名;静态 IP 的账号密码、出口 IP、内核日志里的访问历史都不放进来
+  const safeLine = { ...s.line, username: s.line.username ? '***' : '', password: s.line.password ? '***' : '', server: s.line.server ? maskIp(s.line.server) : '', exitIp: s.line.exitIp || '' };
   const lines = [
     `AI Network Clean ${state.version}${state.packaged ? '' : '(开发版)'} · ${new Date().toISOString()}`,
-    `静态 IP ${hasLine() ? `${s.line.type}://${s.line.server}:${s.line.port}${s.line.viaNode ? '(经节点)' : ''}` : '-'} · 期望出口 ${s.line.exitIp || '-'} · 管理员 ${state.admin}`,
-    `连接 ${c.status} · 模式 ${c.mode} · 线路 ${c.lineUp} · 出口 ${c.exitIp ?? '-'}${c.node ? ` · 节点 ${c.node}` : ''}`,
+    `静态 IP ${hasLine() ? `${s.line.type}://${safeLine.server}:${s.line.port}${s.line.viaNode ? '(经节点)' : ''}` : '-'} · 期望出口 ${s.line.exitIp ? '已填' : '-'} · 管理员 ${state.admin}`,
+    `连接 ${c.status} · 模式 ${c.mode} · 线路 ${c.lineUp} · 出口 ${c.exitIp ? maskIp(c.exitIp) : '-'}${c.node ? ` · 节点 ${c.node}` : ''}`,
     c.warning ? `提示:${c.warning}` : '', c.error ? `错误:${c.error}` : '',
     connectTimings.length ? `最近一次连接各步(累计用时):${connectTimings.join(' → ')}` : '',
-    // 订阅链接带机场令牌,报告里只留主机名;静态 IP 的密码不出现
-    `设置:${JSON.stringify({ ...s, line: { ...s.line, password: s.line.password ? '***' : '' }, subs: s.subs.map((x) => `${x.name}(${safeHost(x.url) ?? '格式不对'})${x.enabled ? '' : '·未用'}`) })} · 其他代理软件:${lastOtherTun ?? '无'}`,
+    `设置:${JSON.stringify({ ...s, line: safeLine, subs: s.subs.map((x) => `${x.name}(${safeHost(x.url) ?? '格式不对'})${x.enabled ? '' : '·未用'}`) })} · 其他代理软件:${lastOtherTun ?? '无'}`,
     '',
     ...(state.diag ? [`诊断 ${state.diag.at}:${state.diag.summary}`, ...state.diag.steps.map((x) => `  [${x.state}] ${x.title}:${x.detail}`), ...state.diag.advice.map((a) => `  建议:${a}`), ''] : []),
     ...(state.protect ? [`防护检测 ${state.protect.at}:出口 ${state.protect.ip.state}(${state.protect.ip.detail}) · DNS ${state.protect.dns.state}(${state.protect.dns.detail}) · WebRTC ${state.protect.webrtc.state}(${state.protect.webrtc.detail})`, ''] : []),
     '最近的连接日志:',
-    ...state.log.slice(-30).map((e) => `  ${e.at} [${e.kind}] ${e.text}`),
-    '', '内核日志(末尾):', mihomo.recentLog || '(内核未运行或没有日志)',
+    ...state.log.slice(-30).map((e) => `  ${e.at} [${e.kind}] ${maskIp(e.text)}`),
+    '', '内核日志:不在诊断报告里(含访问过的全部域名和程序名,要看得去「日志」页或数据目录的 mihomo.log)',
   ].filter((l) => l !== undefined);
-  clipboard.writeText(lines.join('\n'));
+  clipboard.writeText(maskIp(lines.join('\n')));
   return lines.length;
 });
 function safeHost(u: string): string | null { try { return new URL(u).host; } catch { return null; } }
 
-ipcMain.handle('copy', (_e, text: string) => clipboard.writeText(String(text).slice(0, 4000)));
-ipcMain.handle('log.export', async () => {
+handle('copy', (_e, text: string) => clipboard.writeText(String(text).slice(0, 4000)));
+handle('log.export', async () => {
   const r = await dialog.showSaveDialog(win!, {
     title: '导出连接日志',
     defaultPath: join(app.getPath('documents'), `AI-Network-Clean-连接日志-${new Date().toISOString().slice(0, 10)}.txt`),
     filters: [{ name: '文本', extensions: ['txt'] }],
   });
   if (r.canceled || !r.filePath) return null;
-  writeFileSync(r.filePath, '\ufeff' + `AI Network Clean 连接日志 · ${new Date().toISOString()}\r\n\r\n` + connLog.text());
+  writeFileSync(r.filePath, '\ufeff' + `AI Network Clean 连接日志 · ${new Date().toISOString()}\r\n\r\n` + maskIp(connLog.text()));
   return r.filePath;
 });
-ipcMain.handle('anomaly.export', async () => {
+handle('anomaly.export', async () => {
   const r = await dialog.showSaveDialog(win!, {
     title: '导出异常连接记录',
     defaultPath: join(app.getPath('documents'), `AI-Network-Clean-异常连接-${new Date().toISOString().slice(0, 10)}.txt`),
@@ -1255,13 +1295,13 @@ ipcMain.handle('anomaly.export', async () => {
   });
   if (r.canceled || !r.filePath) return null;
   const events = connLog.all().filter(isAbnormalEvent).map((e) => `${new Date(e.at).toLocaleString('zh-CN', { hour12: false })}  [${e.kind}]  ${e.text}`).join('\r\n');
-  writeFileSync(r.filePath, '\ufeff' + `AI Network Clean 异常连接记录\r\n\r\n== 异常事件 ==\r\n${events || '(没有)'}\r\n\r\n== 被拦住、没走静态 IP 或连不上的 AI 连接 ==\r\n${anomalies.text() || '(没有)'}\r\n`);
+  writeFileSync(r.filePath, '\ufeff' + `AI Network Clean 异常连接记录\r\n\r\n== 异常事件 ==\r\n${events || '(没有)'}\r\n\r\n== 被拦住、没走静态 IP 或连不上的 AI 连接 ==\r\n${maskIp(anomalies.text()) || '(没有)'}\r\n`);
   return r.filePath;
 });
-ipcMain.handle('open.url', (_e, url: string) => { try { if (new URL(url).protocol === 'https:') return shell.openExternal(url); } catch { /* 不是地址 */ } });
-ipcMain.handle('win.show', (_e, page?: string) => showWindow(typeof page === 'string' ? page : undefined));
-ipcMain.handle('tray.hide', () => trayWin?.hide());
-ipcMain.handle('quit', () => { quitting = true; app.quit(); });
+handle('open.url', (_e, url: string) => { try { if (new URL(url).protocol === 'https:') return shell.openExternal(url); } catch { /* 不是地址 */ } });
+handle('win.show', (_e, page?: string) => showWindow(typeof page === 'string' ? page : undefined));
+handle('tray.hide', () => trayWin?.hide());
+handle('quit', () => { quitting = true; app.quit(); });
 
 // ---------- 启动 ----------
 async function bootConnect(): Promise<void> {
