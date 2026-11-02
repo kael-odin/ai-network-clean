@@ -1,8 +1,8 @@
 // 内置 mihomo 内核:找二进制、准备工作目录(地理数据库)、写配置、启动/停止、经控制接口查状态
 import { spawn, type ChildProcess } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, writeFileSync, renameSync, rmSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, writeFileSync, readFileSync, renameSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { buildConfig, configText, subProvider, AI_GROUP, FRONT_GROUP, PROXY_GROUP, AUTO_GROUP, type OwnSub } from './config.ts';
 import { createLogFile, type LogFile } from './logfile.ts';
 import type { AiRoutes, UserRule, Line, SubSummary, NodeInfo, NodeList } from '../shared/ipc.ts';
@@ -36,12 +36,26 @@ export interface StartInput {
   autoRegion?: string;
 }
 
+// 内核二进制先定哪来:打包版只认安装目录里的 resources/mihomo.exe,不读环境变量。
+// 程序是按最高权限运行的,而安装目录和环境变量普通权限的程序都能改——让环境变量能指到
+// 任意可执行文件,等于把「下次开机以管理员身份运行任意程序」的入口开出去,不需要 UAC
 export function findBinary(o: MihomoOptions): string {
-  const candidates = [process.env.AIN_MIHOMO_BIN, join(o.resourcesDir, 'mihomo.exe')]
+  const override = o.packaged ? null : (process.env.AIN_MIHOMO_BIN || null);
+  const candidates = [override, join(o.resourcesDir, 'mihomo.exe')]
     .filter((p): p is string => !!p);
   const hit = candidates.find((p) => existsSync(p));
   if (!hit) throw new Error('找不到 mihomo 内核(' + candidates.join(' / ') + ')');
   return hit;
+}
+
+// 打包版启动前按仓库里登记的 SHA-256 校验(和 scripts/fetch-resources.mjs 的 MIHOMO_SHA256 是同一个值)。
+// 没登记时只警告不拦:不能因为维护者还没填就让所有用户用不了,但日志里要看得见
+export function verifyBinary(bin: string, expected: string | null): { ok: boolean; sha: string; detail: string } {
+  const sha = createHash('sha256').update(readFileSync(bin)).digest('hex');
+  if (!expected) return { ok: true, sha, detail: '没有登记校验值,跳过校验(见 scripts/fetch-resources.mjs 的 MIHOMO_SHA256)' };
+  return sha === expected
+    ? { ok: true, sha, detail: `SHA-256 校验通过(${sha.slice(0, 12)}…)` }
+    : { ok: false, sha, detail: `内核文件的 SHA-256 对不上(实际 ${sha}),已拒绝启动。重新下载:node apps/desktop/scripts/fetch-resources.mjs --force` };
 }
 
 // 地理数据库:打包后从 resources 复制
@@ -67,6 +81,8 @@ export class Mihomo {
   #logBytes = 0;
   #tail: string[] = [];
   hasLine = false;
+  // 由调用方在启动前设置(打包时写入的期望哈希);null = 没有登记
+  static expectedSha: string | null = null;
   // 最近一次「AI 出口」的拨号结果。select 组没有测试 URL,mihomo 的 /group/:name/delay 对它不生效,
   // 所以自己测组里那个节点(/proxies/<名字>/delay),结果缓存 90 秒
   #lineProbe: { at: number; delay: number } | null = null;
@@ -92,6 +108,11 @@ export class Mihomo {
     if (this.#child) throw new Error('内核已在运行');
     prepareWorkDir(this.#o);
     const bin = findBinary(this.#o);
+    // 打包版:内核要按最高权限运行,启动前按登记的哈希核对一次(开发版用 AIN_MIHOMO_BIN 指定,不校验)
+    if (this.#o.packaged) {
+      const v = verifyBinary(bin, Mihomo.expectedSha);
+      if (!v.ok) throw new Error(v.detail);
+    }
     this.#secret = randomBytes(16).toString('hex');
     this.#controllerPort = input.controllerPort;
     this.#mixedPort = input.mixedPort;

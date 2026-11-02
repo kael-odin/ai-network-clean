@@ -17,7 +17,7 @@ import { homedir } from 'node:os';
 import { execFile } from 'node:child_process';
 import { createServer } from 'node:net';
 import { networkInterfaces } from 'node:os';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { Mihomo } from './mihomo.ts';
 import { AI_GROUP, PROXY_GROUP } from './config.ts';
 import { createSettingsStore, enabledSubs } from './settings.ts';
@@ -39,8 +39,9 @@ import type {
 
 // 数据目录用固定名字(%APPDATA%in-clean),不跟着 productName 走,免得和别的版本撞
 app.setName('ain-clean');
-// 测试/多开:用独立数据目录
-if (process.env.AIN_USER_DATA) app.setPath('userData', process.env.AIN_USER_DATA);
+// 测试/多开:用独立数据目录。只给开发版用:打包版按最高权限运行,环境和数据目录被普通权限的程序改得动,
+// 让它能改数据目录,等于让普通程序决定以管理员身份读哪份设置
+if (!app.isPackaged && process.env.AIN_USER_DATA) app.setPath('userData', process.env.AIN_USER_DATA);
 const userData = () => app.getPath('userData');
 const HIDDEN_START = process.argv.includes('--hidden');
 
@@ -82,6 +83,11 @@ const mihomo = new Mihomo({
   packaged: app.isPackaged,
 });
 setBackupDir(userData());
+// 内核哈希:构建时写进 dist/main/kernel.sha256;读不到就不校验(开发版、或旧构建)
+try {
+  const sha = readFileSync(join(__dirname, 'kernel.sha256'), 'utf8').trim();
+  if (/^[0-9a-f]{64}$/.test(sha)) Mihomo.expectedSha = sha;
+} catch { /* 没有这个文件就不拦 */ }
 
 const IDLE_CONN: ConnState = {
   status: 'disconnected', mode: 'proxy', lineUp: null, exitIp: null, expectedIp: null,
