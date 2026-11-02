@@ -100,18 +100,22 @@ git clone https://github.com/kael-odin/ai-network-clean.git
 cd ai-network-clean
 npm install
 
-# 下载 mihomo 内核 + 地理数据库(不打进仓库,约 90MB)
+# 如果 Electron 二进制被跳过下载（例如设置过 ELECTRON_SKIP_BINARY_DOWNLOAD），
+# 用镜像补一次，会装进 node_modules/electron/dist：
+# ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ node node_modules/electron/install.js
+
+# 下载 mihomo 内核 + 地理数据库（不打进仓库，约 90MB）
 npm -w ain-clean run resources
 
 npm -w ain-clean run build      # 主进程 / 预加载 / 界面
-npm -w ain-clean run dist:win   # 打 NSIS 安装包(需要 Electron 运行时,见下)
+npm -w ain-clean run dist:win   # 打 NSIS 安装包
 ```
 
-没有 Electron 运行时的话，打包时指定一份解压好的：
+打包时如果不想让 electron-builder 自己下载运行时，直接用装好的那份：
 
 ```bash
 npx electron-builder --win nsis --x64 \
-  -c.electronDist=<解压后的 electron 目录> -c.electronVersion=44.8.0
+  -c.electronDist=node_modules/electron/dist -c.electronVersion=44.8.0
 ```
 
 ### 第一次使用
