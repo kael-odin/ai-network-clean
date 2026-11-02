@@ -11,7 +11,7 @@
 import { existsSync } from 'node:fs';
 import { mkdir, readdir, rename, rm, rmdir, stat } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import type { IdentityInfo, IdentityState } from '../shared/ipc.ts';
 
 export interface IdentityOptions {
@@ -111,29 +111,68 @@ async function scanPaths(p: { claude: string; claudeJson: string; appdata: strin
   };
 }
 
-// 同盘改名;目标已存在就合并进去(逐个搬),绝不覆盖。跨盘时报错,不自作主张复制几百 MB。
-async function move(src: string, dst: string): Promise<void> {
-  if (!existsSync(src)) return;
+// 搬动的每一步:失败时按逆序搬回去
+type Journal = { from: string; to: string }[];
+const MAX_DEPTH = 32;
+
+// 同盘改名;目标已存在且不是目录就合并进去(逐个搬),绝不覆盖。跨盘时报错,不自作主张复制几百 MB。
+// 每一步都记进 journal,中途失败(文件被占用)时调用方能把已经搬的搬回去,不会让两套数据混在一起。
+async function move(src: string, dst: string, journal: Journal, depth = 0): Promise<void> {
+  if (depth > MAX_DEPTH || !existsSync(src)) return;
   await mkdir(join(dst, '..'), { recursive: true }).catch(() => {});
-  if (!existsSync(dst)) {
-    try {
-      await rename(src, dst);
-      return;
-    } catch (e) {
-      const code = (e as NodeJS.ErrnoException).code;
-      if (code === 'EXDEV') throw new Error('数据目录和用户目录不在同一个盘,无法秒级切换。请把数据目录换到同一个盘');
-      if (code !== 'EPERM' && code !== 'EEXIST' && code !== 'ENOTEMPTY') throw e;
-    }
-  }
   const st = await stat(src).catch(() => null);
   if (!st) return;
-  if (st.isFile()) {
-    await rm(dst, { force: true }).catch(() => {});
-    await rename(src, dst);
+  // 目标位置已经有东西:换一个不会撞的位置放,不删、不覆盖
+  let to = dst;
+  if (existsSync(dst)) {
+    if (!st.isDirectory()) {
+      let n = 1;
+      do { to = `${dst}.ain-${Date.now()}-${n++}`; } while (existsSync(to));
+    } else {
+      const dstSt = await stat(dst).catch(() => null);
+      // 目录往普通文件上搬是硬冲突(整个切换要失败回滚);目标目录本身:逐项合并,同名文件不覆盖
+      if (dstSt && !dstSt.isDirectory()) throw new Error(`目标位置被一个文件占着:${dst}`);
+    }
+  }
+  try {
+    await rename(src, to);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === 'EXDEV') throw new Error('数据目录和用户目录不在同一个盘,无法秒级切换。请把数据目录换到同一个盘');
+    // Windows 上文件不能直接改名到已有目录上(EPERM):目录源就逐项合并进去(真实位置可能只剩 .ain-identity 记号),
+    // 文件源撞上已有目录就是真冲突,报错让调用方回滚
+    if (code !== 'EPERM' && code !== 'EEXIST' && code !== 'ENOTEMPTY' && code !== 'EACCES') throw e;
+    if (!st.isDirectory()) throw new Error(`文件被占用或目标位置不是空位,搬不动:${src}`);
+    for (const entry of (await readdir(src)).sort()) await move(join(src, entry), join(to, entry), journal, depth + 1);
+    // 目录本身留到最后删:中途失败时它还完整,可以原样搬回去
+    await rmdir(src).catch(() => {});
     return;
   }
-  for (const entry of await readdir(src)) await move(join(src, entry), join(dst, entry));
-  await rmdir(src).catch(() => {});
+  journal.push({ from: src, to });
+}
+
+// 逆序搬回去。单项失败不打断后面的项(能救多少救多少),但最后必须把失败报出来——
+// 回滚失败意味着真实位置和槽里各留了半份数据,用户必须知道,不能静默当成"切回失败了"
+async function undo(journal: Journal): Promise<string[]> {
+  const failed: string[] = [];
+  for (const { from, to } of [...journal].reverse()) {
+    try { await move(to, from, []); } catch (e) { failed.push(`${to} -> ${from}:${(e as Error).message}`); }
+  }
+  return failed;
+}
+
+// 回滚后抛出的错误:把原始失败和没搬回去的东西都说清楚
+async function rollbackError(cause: unknown, journal: Journal): Promise<Error> {
+  const failed = await undo(journal);
+  const base = cause instanceof Error ? cause.message : String(cause);
+  return new Error(failed.length
+    ? `${base}。切换没有完成,但有几项没能搬回原位,数据可能分散在两处,请到数据目录核对:\n${failed.join('\n')}`
+    : `${base}。切换没有完成,已经把数据原样搬回去了`);
+}
+
+// 删身份槽时,最后兜底校验的根:必须是一个真正的身份槽目录
+function isUnder(p: string, root: string): boolean {
+  return p === root || p.startsWith(root + '\\') || p.startsWith(root + '/');
 }
 
 export function createIdentities(o: IdentityOptions) {
@@ -308,24 +347,28 @@ export function createIdentities(o: IdentityOptions) {
   };
 
   // 把「现在真实位置的数据」搬进某个槽(槽必须还不存在数据)
-  const absorbLive = async (st: State, slotId: string): Promise<void> => {
+  const absorbLive = async (st: State, slotId: string, journal: Journal = []): Promise<void> => {
     const live = livePaths(o);
     const slot = slotPaths(o, slotId);
-    if (existsSync(live.claude)) await move(live.claude, slot.claude);
-    if (existsSync(live.claudeJson)) await move(live.claudeJson, slot.claudeJson);
-    if (existsSync(live.appdata)) await move(live.appdata, slot.appdata);
+    if (existsSync(live.claude)) await move(live.claude, slot.claude, journal);
+    if (existsSync(live.claudeJson)) await move(live.claudeJson, slot.claudeJson, journal);
+    if (existsSync(live.appdata)) await move(live.appdata, slot.appdata, journal);
     // 记下这个槽是"当前真实数据的来源"
     const idx = st.slots.findIndex((s) => s.id === slotId);
     if (idx >= 0) st.slots[idx].lastUsedAt = new Date().toISOString();
   };
 
   // 把某个槽的数据搬到真实位置
-  const restoreSlot = async (slotId: string): Promise<void> => {
+  const restoreSlot = async (slotId: string, journal: Journal): Promise<void> => {
     const live = livePaths(o);
     const slot = slotPaths(o, slotId);
-    if (existsSync(slot.claude)) await move(slot.claude, live.claude);
-    if (existsSync(slot.claudeJson)) await move(slot.claudeJson, live.claudeJson);
-    if (existsSync(slot.appdata)) await move(slot.appdata, live.appdata);
+    // 槽里有、但真实位置被别的东西占着(比如是个文件),改名会失败:要让整笔交易回滚,不能静默跳过
+    const take = async (from: string, to: string) => {
+      if (existsSync(from)) await move(from, to, journal);
+    };
+    await take(slot.claude, live.claude);
+    await take(slot.claudeJson, live.claudeJson);
+    await take(slot.appdata, live.appdata);
   };
 
   return {
@@ -341,7 +384,15 @@ export function createIdentities(o: IdentityOptions) {
       const slot: Slot = { id, name: nm, createdAt: new Date().toISOString(), lastUsedAt: new Date().toISOString() };
       st.slots.push(slot);
       await writeMeta(slot);
-      await absorbLive(st, id);
+      const journal: Journal = [];
+      try {
+        await absorbLive(st, id, journal);
+      } catch (e) {
+        // 搬了一半就失败:把真实位置的数据搬回去,刚建的槽目录删掉,不留半个身份
+        const err = await rollbackError(e, journal);
+        if (!/没能搬回原位/.test(err.message)) await rm(slotPaths(o, id).base, { recursive: true, force: true }).catch(() => {});
+        throw err;
+      }
       await writeMeta(slot);
       st.activeId = id;
       await write(st);
@@ -358,29 +409,27 @@ export function createIdentities(o: IdentityOptions) {
       const running = o.isClaudeRunning ? await o.isClaudeRunning() : { desktop: false, cli: 0 };
       if (running.desktop || running.cli > 0) throw new Error('Claude 还在运行:先结束它再切换(点「结束 Claude 并继续」)');
 
-      // 当前真实数据先回到它所属的槽
-      const owner = st.activeId && st.slots.some((s) => s.id === st.activeId) ? st.activeId : UNMANAGED_ID;
-      if (owner === UNMANAGED_ID) {
-        const has = existsSync(livePaths(o).claude) || existsSync(livePaths(o).appdata) || existsSync(livePaths(o).claudeJson);
-        if (has) {
-          if (!st.slots.some((s) => s.id === UNMANAGED_ID)) {
-            const auto: Slot = { id: UNMANAGED_ID, name: '未归属(切换前自动保存)', createdAt: new Date().toISOString(), lastUsedAt: null };
-            st.slots.push(auto);
-            await writeMeta(auto);
-          }
-          await absorbLive(st, UNMANAGED_ID);
-        }
-      } else {
-        await absorbLive(st, owner);
-      }
-
-      // 目标槽搬到真实位置;失败就把刚才的搬回去
-      const undo: [string, string][] = [];
+      // 整次切换是一笔交易:当前数据搬回所属的槽,再把目标槽搬到真实位置;
+      // 任何一步失败都按逆序全部搬回去,真实位置和各个槽都不会留半截数据
+      const journal: Journal = [];
       try {
-        await restoreSlot(id);
+        const owner = st.activeId && st.slots.some((s) => s.id === st.activeId) ? st.activeId : UNMANAGED_ID;
+        if (owner === UNMANAGED_ID) {
+          const has = existsSync(livePaths(o).claude) || existsSync(livePaths(o).appdata) || existsSync(livePaths(o).claudeJson);
+          if (has) {
+            if (!st.slots.some((s) => s.id === UNMANAGED_ID)) {
+              const auto: Slot = { id: UNMANAGED_ID, name: '未归属(切换前自动保存)', createdAt: new Date().toISOString(), lastUsedAt: null };
+              st.slots.push(auto);
+              await writeMeta(auto);
+            }
+            await absorbLive(st, UNMANAGED_ID, journal);
+          }
+        } else {
+          await absorbLive(st, owner, journal);
+        }
+        await restoreSlot(id, journal);
       } catch (e) {
-        for (const [src, dst] of undo.reverse()) await move(dst, src).catch(() => {});
-        throw e;
+        throw await rollbackError(e, journal);
       }
       st.activeId = id;
       const idx = st.slots.findIndex((s) => s.id === id);
@@ -413,12 +462,18 @@ export function createIdentities(o: IdentityOptions) {
     },
 
     // 删除身份(只删槽里的数据;当前在用的不能删)
+    // id 来自界面,必须当不可信输入:格式不对、不存在、解析后不在身份目录下,一律拒绝
     async remove(id: string): Promise<IdentityState> {
+      if (typeof id !== 'string' || !SAFE_ID.test(id)) throw new Error('身份编号不对');
       const st = await read();
+      if (!st.slots.some((s) => s.id === id)) throw new Error('找不到这个身份');
       if (st.activeId === id) throw new Error('这个身份正在使用:先切换到别的身份再删');
+      const p = slotPaths(o, id);
+      const root = join(o.dataDir, 'identities');
+      const real = resolve(p.base);
+      if (real !== join(resolve(root), id) || !isUnder(real, resolve(root))) throw new Error('身份目录不在数据目录里,已拒绝删除');
       st.slots = st.slots.filter((s) => s.id !== id);
       await write(st);
-      const p = slotPaths(o, id);
       await rm(p.base, { recursive: true, force: true }).catch(async () => {
         // 某些文件被占用时逐个删,删不掉就留着
         for (const k of ['claude', 'claudeJson', 'appdata'] as const) await rm(p[k], { recursive: true, force: true }).catch(() => {});

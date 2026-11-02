@@ -3,7 +3,7 @@
 // 指向我们的端口或没设(虚拟网卡模式下直连会被接管)= 正常;指向 Clash 等别的程序、或指向没人在听的端口 = 提示,并可一键修正:
 // 在 settings.json 的 env 里把代理指到客户端的本地端口,原来的值备份下来,可以撤销。
 import { execFile } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -31,14 +31,26 @@ async function regEnv(key: string): Promise<Record<string, string>> {
 function readSettings(): Record<string, unknown> | null {
   try { return existsSync(settingsPath()) ? (JSON.parse(readFileSync(settingsPath(), 'utf8')) as Record<string, unknown>) : null; } catch { return null; }
 }
+// 改文件前用这个:文件在但读不懂(手写坏、别的工具写到一半)就停下来,
+// 绝不能当成「空配置」写回去——那会把用户的权限、hooks、model 全冲掉
+function readSettingsStrict(): Record<string, unknown> | null {
+  if (!existsSync(settingsPath())) return null;
+  const text = readFileSync(settingsPath(), 'utf8');
+  let doc: unknown;
+  try { doc = JSON.parse(text); } catch {
+    throw new Error(`${settingsPath()} 不是合法的 JSON(可能手动改坏了),为了不覆盖你的其它设置,这次没有改它`);
+  }
+  if (!doc || typeof doc !== 'object' || Array.isArray(doc)) throw new Error(`${settingsPath()} 的内容不是一份设置对象,这次没有改它`);
+  return doc as Record<string, unknown>;
+}
 const pick = (env: Record<string, unknown> | undefined): string | null => {
   for (const k of KEYS) { const v = env?.[k]; if (typeof v === 'string' && v.trim()) return v.trim(); }
   return null;
 };
 
 // 实际生效的代理和它来自哪里:settings.json 的 env > 用户环境变量 > 系统环境变量
-export async function effectiveProxy(): Promise<{ proxy: string | null; source: string | null }> {
-  const fromSettings = pick(readSettings()?.env as Record<string, unknown> | undefined);
+export async function effectiveProxy(settings?: Record<string, unknown> | null): Promise<{ proxy: string | null; source: string | null }> {
+  const fromSettings = pick((settings ?? readSettings())?.env as Record<string, unknown> | undefined);
   if (fromSettings) return { proxy: fromSettings, source: 'Claude Code 设置(~/.claude/settings.json)' };
   const user = pick(await regEnv('HKCU\\Environment'));
   if (user) return { proxy: user, source: '用户环境变量' };
@@ -62,8 +74,11 @@ async function portOwner(port: number): Promise<{ pid: number; name: string } | 
 
 export async function checkClaudeCode(o: { ourPid: number | null; ourPort: number; tun: boolean; connected: boolean }): Promise<CcReport> {
   const at = new Date().toISOString();
-  const fixed = existsSync(backupPath());
-  const { proxy, source } = await effectiveProxy();
+  const fixed = claudeCodeFixed();
+  // 设置读不懂时 check 本身不能抛:给出「修不了」的结论,让用户先修文件
+  let settings = null;
+  try { settings = readSettingsStrict(); } catch (e) { return { at, proxy: null, source: null, fixed, state: 'warn', detail: (e as Error).message, fixable: false }; }
+  const { proxy, source } = await effectiveProxy(settings);
   const base = { at, proxy, source, fixed };
   if (!proxy) {
     return o.tun
@@ -86,36 +101,54 @@ export async function checkClaudeCode(o: { ourPid: number | null; ourPort: numbe
 let backupDir = '';
 export function setBackupDir(dir: string): void { backupDir = dir; }
 const backupPath = () => join(backupDir || homedir(), 'claudecode-proxy-backup.json');
-// 用户点过「一键修正」、还没点「撤销修正」(PM 10-23 巡查:修正写死了客户端的端口,客户端一关 Claude Code 就连不上;
-// 改成断开、退出时先撤销,下次连上再自动改回去)
+// 整份原文件只留一份:第二次修正时如果又备份一遍 .ain-backup,第一次的原文件就永久丢了(PM 复查)
+const originalPath = () => settingsPath() + '.ain-backup';
+// 用户点过「一键修正」、还没点「撤销修正」:断开时临时撤销,下次连上自动改回去
 const wantedPath = () => join(backupDir || homedir(), 'claudecode-proxy-wanted');
+// 「现在正改着」:备份文件在 = 改过且还没撤销
+export const claudeCodeFixed = (): boolean => existsSync(backupPath());
 
-// 把 settings.json 的 env 里的代理指到客户端;改之前整份文件另存一份,并记下原来的几个键,撤销时只还原这几个键
+function writeJsonAtomic(file: string, value: unknown): void {
+  const text = JSON.stringify(value, null, 2) + '\n';
+  const tmp = `${file}.ain-tmp`;
+  writeFileSync(tmp, text);
+  renameSync(tmp, file);
+}
+
+// 把 settings.json 的 env 里的代理指到客户端。
+// 改之前整份文件另存一份(只在没有时存),并记下原来的几个键;撤销时优先用整份原文件还原
 export function fixClaudeCode(port: number): void {
-  try { writeFileSync(wantedPath(), new Date().toISOString()); } catch { /* 记不下来就只是下次不自动改回 */ }
+  const cur = readSettingsStrict() ?? {};
   const file = settingsPath();
-  const cur = readSettings() ?? {};
-  if (existsSync(file)) copyFileSync(file, file + '.ain-backup');
+  mkdirSync(dirname(file), { recursive: true });
+  if (existsSync(file) && !existsSync(originalPath())) copyFileSync(file, originalPath());
+  try { writeFileSync(wantedPath(), new Date().toISOString()); } catch { /* 记不下来就只是下次不自动改回 */ }
   const env = { ...((cur.env ?? {}) as Record<string, unknown>) };
   if (!existsSync(backupPath())) writeFileSync(backupPath(), JSON.stringify({ at: new Date().toISOString(), had: Object.fromEntries([...FIX_KEYS, 'NO_PROXY'].map((k) => [k, env[k] ?? null])) }));
   for (const k of FIX_KEYS) env[k] = `http://127.0.0.1:${port}`;
   env.NO_PROXY = 'localhost,127.0.0.1';
-  mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(file, JSON.stringify({ ...cur, env }, null, 2) + '\n');
+  writeJsonAtomic(file, { ...cur, env });
 }
 
 // forget:用户自己点「撤销修正」时为 true,以后不再自动改回;断开、退出时的临时撤销传 false
 export function undoClaudeCode(forget = true): void {
   if (forget) { try { unlinkSync(wantedPath()); } catch { /* 本来就没有 */ } }
   if (!existsSync(backupPath())) return;
-  const { had } = JSON.parse(readFileSync(backupPath(), 'utf8')) as { had: Record<string, unknown> };
-  const cur = readSettings();
-  if (cur) {
-    const env = { ...((cur.env ?? {}) as Record<string, unknown>) };
-    for (const [k, v] of Object.entries(had)) { if (v === null) delete env[k]; else env[k] = v; }
-    const next = { ...cur, env } as Record<string, unknown>;
-    if (Object.keys(env).length === 0) delete next.env;
-    writeFileSync(settingsPath(), JSON.stringify(next, null, 2) + '\n');
+  // 有整份原文件就整份还原(用户在这期间改的别的设置会一起回去,但这是最初那份,不会丢东西);
+  // 没有(本来就没有 settings.json)就只把改过的几个键还原或删掉
+  if (existsSync(originalPath())) {
+    copyFileSync(originalPath(), settingsPath());
+    unlinkSync(originalPath());
+  } else {
+    const { had } = JSON.parse(readFileSync(backupPath(), 'utf8')) as { had: Record<string, unknown> };
+    const cur = readSettings();
+    if (cur) {
+      const env = { ...((cur.env ?? {}) as Record<string, unknown>) };
+      for (const [k, v] of Object.entries(had)) { if (v === null) delete env[k]; else env[k] = v; }
+      const next = { ...cur, env } as Record<string, unknown>;
+      if (Object.keys(env).length === 0) delete next.env;
+      writeJsonAtomic(settingsPath(), next);
+    }
   }
   unlinkSync(backupPath());
 }

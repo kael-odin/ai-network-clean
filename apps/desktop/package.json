@@ -15,7 +15,8 @@
     "resources": "node scripts/fetch-resources.mjs",
     "build": "node scripts/build.mjs",
     "start": "npm run build && electron .",
-    "dist:win": "npm run build && electron-builder --win nsis --x64"
+    "dist:win": "npm run build && electron-builder --win nsis --x64",
+    "test": "node --test test/"
   },
   "dependencies": {
     "js-yaml": "4.3.2"
