@@ -151,8 +151,14 @@ AI 核对  ok  Claude:203.0.113.10
 
 ```
 apps/desktop/release/AI-Network-Clean-Setup-0.1.0.exe
-135,503,692 字节 · SHA-256 D1750195DE7F9F28990D92BEFE4B2496BDA6C092ED49E974A6569EEECDAB952B
+135,505,056 字节（129.2 MB）· SHA-256 5FE846AB70511895F95C1E65336EBB657D5BE493A95F5F2C2C4224F5308EDE9E
 ```
+
+本次包的变化：
+
+- 不再打包 `node_modules`（主进程已由 esbuild 完整打包，运行时不需要）。
+- 应用 Electron fuses：关闭 `NODE_OPTIONS` / `--inspect` 注入入口，`onlyLoadAppFromAsar`。
+- 构建时把内核哈希写进 `dist/main/kernel.sha256`，启动前核对；打包版不读 `AIN_MIHOMO_BIN` / `AIN_USER_DATA`。
 
 - 安装包不包含源码映射（`dist/**/*.map` 已排除）。
 - NSIS 向导式、按用户安装；应用本体 `requestedExecutionLevel=highestAvailable`（TUN 需要，启动会弹 UAC）。
@@ -161,11 +167,22 @@ apps/desktop/release/AI-Network-Clean-Setup-0.1.0.exe
 - 不保证不被封——风控由服务方决定，客户端只负责出口一致、环境一致、不泄露。
 - 渲染层没有单元测试，验收靠实跑与截图。
 
+## 7.1 TUN 与 Clash 并存
+
+以前只要 `clash-verge` 之类的进程在任务列表里，就放弃 TUN 退回本地代理——即使 Clash 的 TUN 和系统代理开关都关着、根本没接管流量。退回本地代理后，浏览器以外的程序（Claude 桌面版和里面的 Claude Code）不一定走静态 IP。
+
+现在按「实际占用」判断：只有别的代理/VPN 隧道网卡在线并占着默认路由时才退回本地代理；进程在跑但没接管流量时照常起 TUN，只提示一句。真起不来时内核日志有 `Start TUN listening error`，仍会自动降级。
+
+用本机真实状态验证（Clash Verge 开着、开关全关）：新判定选 TUN。
+
 复跑：
 
 ```bash
+npm -w ain-clean run typecheck
+npm -w ain-clean test                       # 9 项回归测试（身份、恢复、TUN 决策、系统还原）
 node apps/desktop/scripts/check-config.mjs
 node apps/desktop/scripts/test-identities.mjs
 # TUN 实测需管理员启动并开调试端口，然后：
 node tools/tun-test.mjs 9336 tun-test
 ```
+
