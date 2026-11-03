@@ -3,6 +3,7 @@
 import { app, BrowserWindow, ipcMain, session, shell, Tray, Menu, nativeImage, clipboard, screen, Notification, dialog, powerMonitor } from 'electron';
 import { createConnLog } from './connlog.ts';
 import { createStats, describeStats } from './stats.ts';
+import { decideTun, isTunnelAdapter, PROXY_PROCESSES, PROXY_ADAPTER, VPN_ADAPTER } from './conflict.ts';
 import { decideGate } from './gate.ts';
 import { claudeSeenToday, isDesktop, listClaude, parseClaudeStatus, pickClaude, STATUS_URL } from './claude.ts';
 import { createConnTracker } from './conns.ts';
@@ -179,11 +180,6 @@ async function isAdmin(): Promise<boolean> {
   return new Promise((ok) => execFile('net', ['session'], { windowsHide: true }, (err) => ok(!err)));
 }
 
-// 别的软件(Clash Verge、其他 VPN)开着时我们的 TUN 起不来,而且流量会先经它:这时退回本地代理模式并提醒
-const PROXY_PROCESSES = /^(clash-verge|verge-mihomo|verge-mihomo-alpha|clash|Clash for Windows|clash-win64|clashn|mihomo|sing-box|v2rayn|v2ray|xray|netch|nekobox|nekoray|hiddify|flclash|Surge)$/i;
-const PROXY_ADAPTER = /Mihomo|Clash|Meta Tunnel|sing-box|Surge|Netch|v2ray|Xray/i;
-const VPN_ADAPTER = /\bTUN\b|TAP-|WireGuard|Tailscale|ZeroTier|VPN|Hamachi|Oray|Wintun/i;
-
 // 独立检测:有没有别的虚拟网卡占着默认路由(它就是本机「直连」的真实出口)
 async function detectExternalTun(): Promise<{ name: string; description: string } | null> {
   if (process.platform !== 'win32') return null;
@@ -194,35 +190,29 @@ async function detectExternalTun(): Promise<{ name: string; description: string 
   const [name, desc] = out.trim().split('|');
   if (!name) return null;
   // 只有「隧道类」网卡才算:物理网卡占默认路由是正常的,不能报成外部 TUN
-  const TUNNEL = /Meta|Mihomo|Clash|TUN|wintun|Wintun|TAP-|WireGuard|Tailscale|ZeroTier|Wireguard|OpenVPN|Hamachi|VPN/i;
-  if (!TUNNEL.test(`${name} ${desc ?? ''}`)) return null;
+  if (!isTunnelAdapter(name, desc ?? '')) return null;
   return { name, description: desc ?? '' };
 }
 
-async function otherTunAdapter(): Promise<string | null> {
-  if (process.platform !== 'win32') return null;
+// 检测分两样:别的隧道网卡是否在线且占着默认路由(这才挡 TUN),以及在跑的代理类进程(只用来提示)。
+// 以前只要进程名在任务列表里就放弃 TUN——Clash 开着但开关全关时也会被误判,浏览器以外的程序就不走静态 IP 了
+async function detectConflicts(): Promise<{ adapter: string | null; procs: string[] }> {
+  if (process.platform !== 'win32') return { adapter: null, procs: [] };
   const { execFile } = await import('node:child_process');
   const run = (file: string, args: string[]) => new Promise<string>((ok) => execFile(file, args, { windowsHide: true }, (_e, stdout) => ok(String(stdout ?? ''))));
   const [adapters, procs] = await Promise.all([
     run('powershell', ['-NoProfile', '-Command', "[Console]::OutputEncoding = [Text.Encoding]::UTF8; $d = @(Get-NetRoute -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.DestinationPrefix -in '0.0.0.0/0','0.0.0.0/1','128.0.0.0/1' } | ForEach-Object { $_.ifIndex }); Get-NetAdapter | Where-Object Status -eq 'Up' | ForEach-Object { $_.Name + '|' + $_.InterfaceDescription + '|' + ($d -contains $_.ifIndex) }"]),
     run('tasklist', ['/FO', 'CSV', '/NH']),
   ]);
+  // 代理类网卡在线、或 VPN 类网卡占着默认路由:才是真冲突
   const adapter = adapters.split(/\r?\n/).map((l) => l.trim().split('|')).find(([name, desc, route]) => {
     const text = `${name ?? ''}|${desc ?? ''}`;
     return !!name && (PROXY_ADAPTER.test(text) || (VPN_ADAPTER.test(text) && /^true$/i.test(route ?? '')));
-  });
-  if (adapter) return adapter[0];
-  const names = procs.split(/\r?\n/).map((l) => (l.match(/^"([^"]+)"/)?.[1] ?? '').replace(/\.exe$/i, '')).filter(Boolean);
-  for (const name of names.filter((n) => PROXY_PROCESSES.test(n))) {
-    if (/^mihomo$/i.test(name)) {
-      // 我们自己的内核也叫 mihomo.exe(上次没退干净的):按路径排除
-      const paths = await run('powershell', ['-NoProfile', '-Command', 'Get-Process mihomo -ErrorAction SilentlyContinue | ForEach-Object { $_.Path }']);
-      const ours = app.getPath('exe').replace(/\\[^\\]+$/, '').toLowerCase();
-      if (paths.split(/\r?\n/).map((p) => p.trim().toLowerCase()).filter(Boolean).every((p) => p.startsWith(ours))) continue;
-    }
-    return name + '.exe';
-  }
-  return null;
+  })?.[0] ?? null;
+  const ours = mihomo.pid;
+  const names = [...new Set(procs.split(/\r?\n/).map((l) => l.match(/^"([^"]+)","(\d+)"/)).filter((m): m is RegExpMatchArray => !!m)
+    .filter((m) => Number(m[2]) !== ours).map((m) => m[1].replace(/\.exe$/i, '')).filter((n) => PROXY_PROCESSES.test(n) && !/^mihomo$/i.test(n)))];
+  return { adapter, procs: names.map((n) => n + '.exe') };
 }
 
 // 连着时还有没有别的代理软件在跑、系统代理是不是指向别的程序
@@ -230,17 +220,27 @@ async function proxyConflict(): Promise<ProtectItem> {
   if (process.platform !== 'win32') return { state: 'ok', detail: '' };
   const { execFile } = await import('node:child_process');
   const run = (file: string, args: string[]) => new Promise<string>((ok) => execFile(file, args, { windowsHide: true }, (_e, stdout) => ok(String(stdout ?? ''))));
-  const [procs, inet] = await Promise.all([run('tasklist', ['/FO', 'CSV', '/NH']), run('reg', ['query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings'])]);
-  const ours = mihomo.pid;
-  const names = [...new Set(procs.split(/\r?\n/).map((l) => l.match(/^"([^"]+)","(\d+)"/)).filter((m): m is RegExpMatchArray => !!m)
-    .filter((m) => Number(m[2]) !== ours).map((m) => m[1].replace(/\.exe$/i, '')).filter((n) => PROXY_PROCESSES.test(n) && !/^mihomo$/i.test(n)))];
+  const [{ adapter, procs }, inet] = await Promise.all([
+    detectConflicts(),
+    run('reg', ['query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings']),
+  ]);
   const proxyOn = /ProxyEnable\s+REG_DWORD\s+0x1\b/.test(inet);
   const server = inet.match(/ProxyServer\s+REG_SZ\s+(\S+)/)?.[1] ?? '';
   const ourPorts = [state.settings.mixedPort, ...(mihomo.running ? [7897, 7890] : [])];
   const sysOther = proxyOn && server && !ourPorts.some((p) => server.includes(':' + p)) ? server : null;
-  if (!names.length && !sysOther) return { state: 'ok', detail: '没有别的代理或 VPN 在和客户端抢流量' };
-  const parts = [names.length ? `检测到 ${names.join('、')} 正在运行` : '', sysOther ? `系统代理指向 ${sysOther}` : ''].filter(Boolean);
-  return { state: 'fail', detail: `${parts.join(',')}:浏览器等程序的流量可能先经过它,不走你的静态 IP。退出它再重新连接,客户端才能完整接管` };
+  if (!adapter && !procs.length && !sysOther) return { state: 'ok', detail: '没有别的代理或 VPN 在和客户端抢流量' };
+  const parts = [
+    adapter ? `「${adapter}」的虚拟网卡在线` : '',
+    procs.length ? `${procs.join('、')} 在运行(开关可能是关的)` : '',
+    sysOther ? `系统代理指向 ${sysOther}` : '',
+  ].filter(Boolean);
+  // 进程在跑但没接管流量:不算冲突(这一项只显示、不进闸门),说明一句就行
+  return {
+    state: adapter || sysOther ? 'fail' : 'ok',
+    detail: adapter || sysOther
+      ? `${parts.join(',')}:浏览器等程序的流量可能先经过它,不走你的静态 IP。退出它再重新连接,客户端才能完整接管`
+      : `${parts.join(',')}:它没有接管流量,不影响`,
+  };
 }
 
 // ---------- 连接 ----------
@@ -317,25 +317,22 @@ async function connectOnce(retry = true, keepDns = false): Promise<void> {
   const subs = enabledSubs(s);
   const subDnsP = subs.length ? Promise.all(subs.map((x) => fetchSubDns(x.url, join(userData(), 'mihomo'), x.id))) : Promise.resolve([]);
   const staleP = clearStaleSysProxy().catch(() => null);
-  const other = await otherTunAdapter();
+  const { adapter: conflictAdapter, procs: conflictProcs } = await detectConflicts();
   state.externalTun = await detectExternalTun().catch(() => null);
   mark('检测其他代理软件');
-  lastOtherTun = other;
-  const wantTun = s.tun === 'off' ? false : s.tun === 'on' ? state.admin && !other : state.admin && !other;
+  lastOtherTun = conflictAdapter ?? (conflictProcs.length ? conflictProcs[0] : null);
+  const { tun: wantTun, warning, mode: wantMode } = decideTun(s.tun, state.admin, conflictAdapter, conflictProcs, s.mixedPort);
   let tun = wantTun;
   const tunNote = state.externalTun
     ? `另一个虚拟网卡「${state.externalTun.name}」正在接管全局流量:本客户端的「直连」会经它出去,静态 IP 能不能连上由它决定`
     : null;
   // 上面几次读系统状态都要几百毫秒,期间用户可能已经点了「断开」:取消时不能再改系统代理、不能再起内核
   if (cancelled()) throw new Cancelled();
-  const warning = other
-    ? `${tunNote ? tunNote + '。' : ''}检测到「${other}」在运行:已改用本地代理模式,要完整接管请退出它再重新连接。`
-    : !state.admin ? `没有管理员权限:本地代理模式,只接管浏览器(系统代理已指到 127.0.0.1:${s.mixedPort}),桌面程序接管不了。` : null;
-  state.conn = { ...IDLE_CONN, status: 'starting', mode: tun ? 'tun' : 'proxy', expectedIp: s.line.exitIp || null, warning };
+  state.conn = { ...IDLE_CONN, status: 'starting', mode: wantMode, expectedIp: s.line.exitIp || null, warning: tunNote ?? warning };
   state.protect = null;
   state.aiCheck = null;
   stats.connects++;
-  if (retry) log('连接', `开始连接(${tun ? '虚拟网卡' : '本地代理'}模式${other ? `,检测到 ${other}` : ''})`);
+  if (retry) log('连接', `开始连接(${tun ? '虚拟网卡' : '本地代理'}模式${conflictAdapter ? `,检测到 ${conflictAdapter} 在接管流量` : conflictProcs.length ? `,${conflictProcs.join('、')} 在运行但没接管流量` : ''})`);
   push();
 
   if (!tun && sysDns.pending()) await sysDns.restore().catch(() => {});
@@ -1382,9 +1379,11 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(async () => {
     await session.defaultSession.setProxy({ mode: 'direct' }).catch(() => {});
     state.admin = await isAdmin();
-    lastOtherTun = await otherTunAdapter().catch(() => null);
+    const boot = await detectConflicts().catch(() => ({ adapter: null, procs: [] as string[] }));
+    lastOtherTun = boot.adapter ?? (boot.procs[0] ?? null);
     state.externalTun = await detectExternalTun().catch(() => null);
-    state.tunAvailable = state.admin && !lastOtherTun;
+    // 只有别的隧道网卡真的在线才算 TUN 不可用;进程在跑但开关关着不算
+    state.tunAvailable = state.admin && !boot.adapter;
     applySettings(state.settings);
     state.log = connLog.recent();
     state.abnormal = connLog.all().filter(isAbnormalEvent).slice(-100);

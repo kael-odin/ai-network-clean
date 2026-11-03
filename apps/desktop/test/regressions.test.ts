@@ -9,6 +9,33 @@ import { tmpdir } from 'node:os';
 import { createIdentities } from '../src/main/identities.ts';
 import { fixClaudeCode, undoClaudeCode } from '../src/main/claudecode.ts';
 import { createSysDns } from '../src/main/sysdns.ts';
+import { decideTun } from '../src/main/conflict.ts';
+
+test('TUN 决策:Clash 在运行但开关全关(没有隧道网卡)时照常起 TUN', () => {
+  const r = decideTun('auto', true, null, ['clash-verge.exe', 'verge-mihomo.exe'], 17897);
+  assert.equal(r.tun, true, '应该起 TUN');
+  assert.equal(r.mode, 'tun');
+  assert.match(r.warning ?? '', /在运行但没接管流量/, '提示里说明不影响');
+});
+
+test('TUN 决策:别的隧道网卡在线时退回本地代理', () => {
+  const r = decideTun('auto', true, 'Meta', [], 17897);
+  assert.equal(r.tun, false, '有别的 TUN 时不起');
+  assert.equal(r.mode, 'proxy');
+  assert.match(r.warning ?? '', /Meta.*接管全局流量/);
+});
+
+test('TUN 决策:没有管理员权限时退回本地代理', () => {
+  const r = decideTun('auto', false, null, [], 17897);
+  assert.equal(r.tun, false);
+  assert.match(r.warning ?? '', /管理员/);
+});
+
+test('TUN 决策:设置里关掉虚拟网卡时用本地代理', () => {
+  const r = decideTun('off', true, null, [], 17897);
+  assert.equal(r.tun, false);
+  assert.equal(r.mode, 'proxy');
+});
 
 const GUID_A = '11111111-1111-1111-1111-111111111111';
 const GUID_B = '22222222-2222-2222-2222-222222222222';
